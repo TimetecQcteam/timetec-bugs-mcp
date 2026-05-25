@@ -17,6 +17,10 @@
     .\install.ps1                                  # user scope, name "timetec-bugs"
     .\install.ps1 -Scope Project                   # write to .\.mcp.json
     .\install.ps1 -Name timetec-bugs-sit           # custom entry name
+    .\install.ps1 -SkipCredentials                 # register entry without
+                                                   # prompting for email/password;
+                                                   # user supplies them later via
+                                                   # the `setup_credentials` MCP tool
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +40,13 @@ param(
     [string]$Password = '',
     [string]$AdbPath = '',
     [string]$OneDriveSyncFolder = '',
-    [string]$SharepointBaseUrl = ''
+    [string]$SharepointBaseUrl = '',
+
+    # Skip the credential prompts + login-verification entirely. The MCP entry
+    # is registered without TIMETEC_EMAIL / TIMETEC_PASSWORD in the env block;
+    # the server's `setup_credentials` tool can be called later from inside
+    # Claude Code to fill them in (persists to ~/.timetec-bugs-mcp/config.json).
+    [switch]$SkipCredentials
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,6 +124,7 @@ Write-Host ""
 # --- paths --------------------------------------------------------
 $scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $serverJs    = Join-Path $scriptDir "server.js"
+$entryPoint  = Join-Path $scriptDir "bootstrap.js"
 $packageJson = Join-Path $scriptDir "package.json"
 
 if ($Scope -eq 'User') {
@@ -125,6 +136,7 @@ if ($Scope -eq 'User') {
 # --- prerequisite checks ------------------------------------------
 Write-Step "Checking source files..."
 if (-not (Test-Path $serverJs))    { Write-Err "Missing server.js - run from timetec-bugs-mcp folder root."; exit 1 }
+if (-not (Test-Path $entryPoint))  { Write-Err "Missing bootstrap.js - run from timetec-bugs-mcp folder root."; exit 1 }
 if (-not (Test-Path $packageJson)) { Write-Err "Missing package.json"; exit 1 }
 Write-Ok "Source files OK"
 
@@ -223,45 +235,52 @@ switch ($Environment) {
     }
 }
 
-# Email / password — honour -Email / -Password when supplied.
-if ($Email) {
-    $email = $Email
-    Write-Ok "Using -Email parameter."
+if ($SkipCredentials) {
+    Write-Step "Skipping credential prompts (-SkipCredentials)."
+    Write-Host '    Use the MCP''s setup_credentials tool from Claude Code to configure them later.' -ForegroundColor DarkGray
+    $email = ''
+    $password = ''
 } else {
-    $email = Read-PromptDefault "Email" (Get-ExistingEnv 'TIMETEC_EMAIL')
-}
-if ($Password) {
-    $password = $Password
-    Write-Ok "Using -Password parameter (skipping hidden prompt)."
-} else {
-    $password = Read-PasswordWithDefault "Password" (Get-ExistingEnv 'TIMETEC_PASSWORD')
-}
-
-if ([string]::IsNullOrWhiteSpace($email))    { Write-Err "Email is required."; exit 1 }
-if ([string]::IsNullOrWhiteSpace($password)) { Write-Err "Password is required."; exit 1 }
-
-# --- 3b. verify credentials work against the TimeTec base URL --------
-# No domain check — the auth attempt IS the gate. In interactive mode we
-# loop on failure so the user can retype without re-running the script.
-# In non-interactive mode (-Email AND -Password supplied) we exit 1 on
-# first failure so the calling agent can re-collect creds and re-invoke.
-$nonInteractiveCreds = $Email -and $Password
-Write-Step "Verifying credentials against $baseUrl ..."
-while ($true) {
-    if (Test-TimetecCredentials -BaseUrl $baseUrl -Email $email -Password $password) {
-        Write-Ok "Login OK ($email)."
-        break
+    # Email / password — honour -Email / -Password when supplied.
+    if ($Email) {
+        $email = $Email
+        Write-Ok "Using -Email parameter."
+    } else {
+        $email = Read-PromptDefault "Email" (Get-ExistingEnv 'TIMETEC_EMAIL')
     }
-    if ($nonInteractiveCreds) {
-        Write-Err "Login failed for $email — credentials rejected by $baseUrl."
-        Write-Err "Re-run with corrected -Email / -Password, or omit them to enter interactively."
-        exit 1
+    if ($Password) {
+        $password = $Password
+        Write-Ok "Using -Password parameter (skipping hidden prompt)."
+    } else {
+        $password = Read-PasswordWithDefault "Password" (Get-ExistingEnv 'TIMETEC_PASSWORD')
     }
-    Write-Warn "Login failed — please re-enter your credentials."
-    $email    = Read-PromptDefault       "Email"    $email
-    $password = Read-PasswordWithDefault "Password" $password
+
     if ([string]::IsNullOrWhiteSpace($email))    { Write-Err "Email is required."; exit 1 }
     if ([string]::IsNullOrWhiteSpace($password)) { Write-Err "Password is required."; exit 1 }
+
+    # --- 3b. verify credentials work against the TimeTec base URL --------
+    # No domain check — the auth attempt IS the gate. In interactive mode we
+    # loop on failure so the user can retype without re-running the script.
+    # In non-interactive mode (-Email AND -Password supplied) we exit 1 on
+    # first failure so the calling agent can re-collect creds and re-invoke.
+    $nonInteractiveCreds = $Email -and $Password
+    Write-Step "Verifying credentials against $baseUrl ..."
+    while ($true) {
+        if (Test-TimetecCredentials -BaseUrl $baseUrl -Email $email -Password $password) {
+            Write-Ok "Login OK ($email)."
+            break
+        }
+        if ($nonInteractiveCreds) {
+            Write-Err "Login failed for $email — credentials rejected by $baseUrl."
+            Write-Err "Re-run with corrected -Email / -Password, or omit them to enter interactively."
+            exit 1
+        }
+        Write-Warn "Login failed — please re-enter your credentials."
+        $email    = Read-PromptDefault       "Email"    $email
+        $password = Read-PasswordWithDefault "Password" $password
+        if ([string]::IsNullOrWhiteSpace($email))    { Write-Err "Email is required."; exit 1 }
+        if ([string]::IsNullOrWhiteSpace($password)) { Write-Err "Password is required."; exit 1 }
+    }
 }
 
 # Optional paths — honour overrides; otherwise prompt with the previous value as default.
@@ -291,15 +310,15 @@ foreach ($p in $existingEnv.PSObject.Properties) {
     $envObj | Add-Member -MemberType NoteProperty -Name $p.Name -Value $p.Value -Force
 }
 $envObj | Add-Member -MemberType NoteProperty -Name 'TIMETEC_BASE_URL' -Value $baseUrl  -Force
-$envObj | Add-Member -MemberType NoteProperty -Name 'TIMETEC_EMAIL'    -Value $email    -Force
-$envObj | Add-Member -MemberType NoteProperty -Name 'TIMETEC_PASSWORD' -Value $password -Force
+if ($email)      { $envObj | Add-Member -MemberType NoteProperty -Name 'TIMETEC_EMAIL'        -Value $email      -Force }
+if ($password)   { $envObj | Add-Member -MemberType NoteProperty -Name 'TIMETEC_PASSWORD'     -Value $password   -Force }
 if ($adbPath)    { $envObj | Add-Member -MemberType NoteProperty -Name 'ADB_PATH'             -Value $adbPath    -Force }
 if ($onedrive)   { $envObj | Add-Member -MemberType NoteProperty -Name 'ONEDRIVE_SYNC_FOLDER' -Value $onedrive   -Force }
 if ($sharepoint) { $envObj | Add-Member -MemberType NoteProperty -Name 'SHAREPOINT_BASE_URL'  -Value $sharepoint -Force }
 
 $desiredEntry = [PSCustomObject]@{
     command = 'node'
-    args    = @($serverJs)
+    args    = @($entryPoint)
     env     = $envObj
 }
 
@@ -323,9 +342,13 @@ Write-Host ""
 Write-Host "  === Done ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Entry name : $Name"
-Write-Host "  MCP server : $serverJs"
+Write-Host "  MCP server : $entryPoint"
 Write-Host "  Base URL   : $baseUrl"
-Write-Host "  Email      : $email"
+if ($email) {
+    Write-Host "  Email      : $email"
+} else {
+    Write-Host "  Email      : (not set — call the MCP's setup_credentials tool from Claude Code)" -ForegroundColor Yellow
+}
 Write-Host "  Config file: $configPath"
 Write-Host ""
 Write-Host "  Restart Claude Code to pick it up."

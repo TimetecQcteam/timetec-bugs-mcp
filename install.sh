@@ -16,6 +16,10 @@
 #   ./install.sh                              # user scope, name "timetec-bugs"
 #   ./install.sh --scope project              # write to ./.mcp.json
 #   ./install.sh --name timetec-bugs-sit      # custom entry name
+#   ./install.sh --skip-credentials           # register entry without prompting
+#                                             # for email/password; user supplies
+#                                             # them later via the MCP's
+#                                             # `setup_credentials` tool
 #   ./install.sh /custom/home                 # alternative target root
 
 set -euo pipefail
@@ -23,13 +27,15 @@ set -euo pipefail
 SCOPE='user'
 NAME='timetec-bugs'
 TARGET_ROOT="$HOME"
+SKIP_CREDENTIALS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --scope)   SCOPE="$2"; shift 2;;
-        --name)    NAME="$2";  shift 2;;
-        -h|--help) sed -n 's/^# \{0,1\}//p' "$0" | sed -n '1,/^$/p'; exit 0;;
-        *)         TARGET_ROOT="$1"; shift;;
+        --scope)             SCOPE="$2"; shift 2;;
+        --name)              NAME="$2";  shift 2;;
+        --skip-credentials)  SKIP_CREDENTIALS=1; shift;;
+        -h|--help)           sed -n 's/^# \{0,1\}//p' "$0" | sed -n '1,/^$/p'; exit 0;;
+        *)                   TARGET_ROOT="$1"; shift;;
     esac
 done
 
@@ -52,6 +58,7 @@ echo
 # --- paths --------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_JS="$SCRIPT_DIR/server.js"
+ENTRY_POINT="$SCRIPT_DIR/bootstrap.js"
 PACKAGE_JSON="$SCRIPT_DIR/package.json"
 
 case "$SCOPE" in
@@ -63,6 +70,7 @@ esac
 # --- prerequisite checks -----------------------------------------
 step "Checking source files..."
 [ -f "$SERVER_JS" ]    || { err "Missing server.js - run from timetec-bugs-mcp folder root."; exit 1; }
+[ -f "$ENTRY_POINT" ]  || { err "Missing bootstrap.js - run from timetec-bugs-mcp folder root."; exit 1; }
 [ -f "$PACKAGE_JSON" ] || { err "Missing package.json"; exit 1; }
 ok "Source files OK"
 
@@ -155,11 +163,18 @@ case "$PRESET" in
     *) BASE_URL="$LIVE_URL" ;;
 esac
 
-EMAIL="$(prompt_default      "Email"    "$(get_existing TIMETEC_EMAIL)")"
-PASSWORD="$(prompt_password  "Password" "$(get_existing TIMETEC_PASSWORD)")"
+if [ "$SKIP_CREDENTIALS" = "1" ]; then
+    step "Skipping credential prompts (--skip-credentials)."
+    echo "    Use the MCP's setup_credentials tool from Claude Code to configure them later."
+    EMAIL=""
+    PASSWORD=""
+else
+    EMAIL="$(prompt_default      "Email"    "$(get_existing TIMETEC_EMAIL)")"
+    PASSWORD="$(prompt_password  "Password" "$(get_existing TIMETEC_PASSWORD)")"
 
-[ -n "$EMAIL" ]    || { err "Email is required."; exit 1; }
-[ -n "$PASSWORD" ] || { err "Password is required."; exit 1; }
+    [ -n "$EMAIL" ]    || { err "Email is required."; exit 1; }
+    [ -n "$PASSWORD" ] || { err "Password is required."; exit 1; }
+fi
 
 ADB_DEFAULT="$(get_existing ADB_PATH)"
 [ -z "$ADB_DEFAULT" ] && ADB_DEFAULT="$HOME/Android/Sdk/platform-tools/adb"
@@ -172,7 +187,7 @@ SHAREPOINT="$(prompt_default "SharePoint base URL (optional)" "$(get_existing SH
 step "Writing config to $CONFIG_PATH ..."
 mkdir -p "$(dirname "$CONFIG_PATH")"
 
-CONFIG_PATH="$CONFIG_PATH" NAME="$NAME" SERVER_JS="$SERVER_JS" \
+CONFIG_PATH="$CONFIG_PATH" NAME="$NAME" ENTRY_POINT="$ENTRY_POINT" \
 BASE_URL="$BASE_URL" EMAIL="$EMAIL" PASSWORD="$PASSWORD" \
 ADB_PATH_VAL="$ADB_PATH_VAL" ONEDRIVE="$ONEDRIVE" SHAREPOINT="$SHAREPOINT" \
 python3 <<'PYEOF'
@@ -200,9 +215,9 @@ existing_env = (existing.get('env') or {}) if isinstance(existing, dict) else {}
 # Preserve any existing env keys we don't ask about, then overlay.
 env = dict(existing_env)
 env['TIMETEC_BASE_URL'] = os.environ['BASE_URL']
-env['TIMETEC_EMAIL']    = os.environ['EMAIL']
-env['TIMETEC_PASSWORD'] = os.environ['PASSWORD']
 for k, v in (
+    ('TIMETEC_EMAIL',        os.environ.get('EMAIL',        '')),
+    ('TIMETEC_PASSWORD',     os.environ.get('PASSWORD',     '')),
     ('ADB_PATH',             os.environ.get('ADB_PATH_VAL', '')),
     ('ONEDRIVE_SYNC_FOLDER', os.environ.get('ONEDRIVE',     '')),
     ('SHAREPOINT_BASE_URL',  os.environ.get('SHAREPOINT',   '')),
@@ -212,7 +227,7 @@ for k, v in (
 
 servers[name] = {
     'command': 'node',
-    'args':    [os.environ['SERVER_JS']],
+    'args':    [os.environ['ENTRY_POINT']],
     'env':     env,
 }
 
@@ -229,9 +244,13 @@ echo
 printf '  %s=== Done ===%s\n' "$C_GREEN" "$C_RESET"
 echo
 echo "  Entry name : $NAME"
-echo "  MCP server : $SERVER_JS"
+echo "  MCP server : $ENTRY_POINT"
 echo "  Base URL   : $BASE_URL"
-echo "  Email      : $EMAIL"
+if [ -n "$EMAIL" ]; then
+    echo "  Email      : $EMAIL"
+else
+    printf '  %sEmail      : (not set — call the MCP'\''s setup_credentials tool from Claude Code)%s\n' "$C_YELLOW" "$C_RESET"
+fi
 echo "  Config file: $CONFIG_PATH"
 echo
 echo "  Restart Claude Code to pick it up."

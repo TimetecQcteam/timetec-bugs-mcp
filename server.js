@@ -9,9 +9,35 @@ import { join, basename } from "path";
 import { homedir } from "os";
 
 // ─── Configuration ──────────────────────────────────────────────────────────
-const BASE_URL = process.env.TIMETEC_BASE_URL || "https://dt-dev.timeteccloud.com";
-const EMAIL = process.env.TIMETEC_EMAIL || "";
-const PASSWORD = process.env.TIMETEC_PASSWORD || "";
+// Credentials are loaded in this priority order:
+//   1. Environment variables (set by install.ps1 / .claude.json env block)
+//   2. ~/.timetec-bugs-mcp/config.json (written by the `setup_credentials` tool)
+//   3. Empty — login() will throw a credentials_required error that Claude
+//      Code can recover from by prompting the user and calling setup_credentials.
+const CONFIG_DIR = join(homedir(), ".timetec-bugs-mcp");
+const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+
+function loadStoredConfig() {
+  try {
+    if (existsSync(CONFIG_FILE)) {
+      const raw = readFileSync(CONFIG_FILE, "utf8");
+      return raw.trim() ? JSON.parse(raw) : {};
+    }
+  } catch (e) {
+    process.stderr.write(`[timetec-bugs-mcp] warning: failed to read ${CONFIG_FILE}: ${e.message}\n`);
+  }
+  return {};
+}
+
+function saveStoredConfig(cfg) {
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+}
+
+const storedConfig = loadStoredConfig();
+let BASE_URL = process.env.TIMETEC_BASE_URL || storedConfig.base_url || "https://dt-dev.timeteccloud.com";
+let EMAIL = process.env.TIMETEC_EMAIL || storedConfig.email || "";
+let PASSWORD = process.env.TIMETEC_PASSWORD || storedConfig.password || "";
 
 // ─── Session Management ────────────────────────────────────────────────────
 const cookieJar = new CookieJar();
@@ -61,7 +87,11 @@ async function fetchWithCookies(url, options = {}) {
 
 async function login() {
   if (!EMAIL || !PASSWORD) {
-    throw new Error("TIMETEC_EMAIL and TIMETEC_PASSWORD environment variables are required");
+    throw new Error(
+      "credentials_required: TimeTec credentials are not configured. " +
+      "Call the `setup_credentials` tool with { environment: 'live'|'sit'|'custom', email, password } " +
+      "to configure. The values will be persisted to ~/.timetec-bugs-mcp/config.json for future sessions."
+    );
   }
 
   // Step 1: GET login page to get CSRF token
@@ -432,6 +462,85 @@ const server = new McpServer({
   name: "timetec-bugs",
   version: "1.0.0",
 });
+
+// ── Tool: setup_credentials ─────────────────────────────────────────────────
+// First-class onboarding path. When any other tool throws "credentials_required",
+// Claude Code should collect email/password from the user and call this tool.
+// Verifies creds by performing a login, then persists to ~/.timetec-bugs-mcp/config.json
+// so future sessions skip the prompt.
+server.tool(
+  "setup_credentials",
+  "Configure or update TimeTec credentials and persist them to ~/.timetec-bugs-mcp/config.json. " +
+  "Use this when other tools return a `credentials_required` error, or to switch environment / change account. " +
+  "The new credentials are validated by performing a login before being saved.",
+  {
+    environment: z.enum(["live", "sit", "custom"]).describe("'live' = dt.timeteccloud.com, 'sit' = dt-dev.timeteccloud.com, 'custom' = use base_url."),
+    base_url: z.string().optional().describe("Required only when environment='custom'. Full base URL, e.g. https://internal.timeteccloud.com."),
+    email: z.string().describe("TimeTec login email."),
+    password: z.string().describe("TimeTec login password."),
+  },
+  async (params) => {
+    let newBaseUrl;
+    if (params.environment === "live") newBaseUrl = "https://dt.timeteccloud.com";
+    else if (params.environment === "sit") newBaseUrl = "https://dt-dev.timeteccloud.com";
+    else {
+      if (!params.base_url) {
+        return textResult({ error: "base_url is required when environment='custom'." });
+      }
+      newBaseUrl = params.base_url.replace(/\/+$/, "");
+    }
+
+    const prev = { BASE_URL, EMAIL, PASSWORD, isAuthenticated, csrfToken, inertiaVersion, currentUserName };
+
+    BASE_URL = newBaseUrl;
+    EMAIL = params.email;
+    PASSWORD = params.password;
+    isAuthenticated = false;
+    csrfToken = null;
+    inertiaVersion = null;
+    currentUserName = null;
+    await cookieJar.removeAllCookies();
+
+    try {
+      await login();
+    } catch (e) {
+      BASE_URL = prev.BASE_URL;
+      EMAIL = prev.EMAIL;
+      PASSWORD = prev.PASSWORD;
+      isAuthenticated = prev.isAuthenticated;
+      csrfToken = prev.csrfToken;
+      inertiaVersion = prev.inertiaVersion;
+      currentUserName = prev.currentUserName;
+      await cookieJar.removeAllCookies();
+      return textResult({
+        error: "credentials_invalid",
+        message: `Login failed against ${newBaseUrl} — ${e.message}`,
+        hint: "Re-call setup_credentials with the correct email/password. Previous credentials (if any) have been restored.",
+      });
+    }
+
+    try {
+      saveStoredConfig({ base_url: newBaseUrl, email: params.email, password: params.password });
+    } catch (e) {
+      return textResult({
+        status: "ok_session_only",
+        warning: `Logged in successfully, but failed to persist credentials to ${CONFIG_FILE}: ${e.message}. They will be lost when the MCP server restarts.`,
+        base_url: newBaseUrl,
+        email: params.email,
+        authenticated_user: currentUserName,
+      });
+    }
+
+    return textResult({
+      status: "ok",
+      base_url: newBaseUrl,
+      email: params.email,
+      authenticated_user: currentUserName,
+      config_file: CONFIG_FILE,
+      message: "Credentials saved and verified. Other tools will now work.",
+    });
+  }
+);
 
 // ── Tool: list_bugs ─────────────────────────────────────────────────────────
 server.tool(
