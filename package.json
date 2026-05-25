@@ -1,0 +1,15 @@
+{
+  "name": "timetec-bugs-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for TimeTec Project Bug List CRUD operations",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "tough-cookie": "^5.1.2",
+    "set-cookie-parser": "^2.7.1"
+  }
+}
