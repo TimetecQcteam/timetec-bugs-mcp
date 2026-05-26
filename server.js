@@ -2554,6 +2554,119 @@ server.tool(
   }
 );
 
+// ── Tool: sheet_verify_release_row ──────────────────────────────────────────
+// Record the verdict of verifying ONE release row (the TS-RND-* feature rows
+// above the "Bug Fix" marker) on a release tab. Two outcomes:
+//
+//   • verdict="no_bugs"     → Status = "CLOSED", `#` cell painted green
+//   • verdict="bugs_found"  → Status = bug_nos joined by '\n', `#` cell red
+//
+// This tool only touches the release tab. When the user also wants the new
+// bugs added to the Bug list master tab, the agent calls sheet_append_row
+// FIRST for each new bug (capturing the auto-assigned No from the flow
+// response), then passes those No's into this tool. The split keeps each
+// tool single-purpose and lets the user provide pre-existing bug No's when
+// they only want the release column updated.
+server.tool(
+  "sheet_verify_release_row",
+  "Record a verification verdict on ONE release row (the TS-RND-* feature rows above the 'Bug Fix' marker) inside a PMv2 release tab. Two outcomes:\n\n• `verdict='no_bugs'`   → writes `Status = 'CLOSED'` on that row, paints the `#` cell green (#20ff1c).\n• `verdict='bugs_found'` → writes the bug No(s) into the `Status` cell, **newline-separated (one No per line)**, paints the `#` cell red (#FF0000).\n\n**Tab routing:** given `release_version` like 'v26.5.1.2', the tool writes to tab `v26.5.1.x` (strip the last dot-segment, append `.x`). Versions MUST start with `v` and have exactly 4 dot-segments. `task_id` MUST match `TS-RND-XXXX` — the release row's `#` cell value.\n\n**BUG LIST PROMPT RULE (must read before calling):** When `verdict='bugs_found'`, before invoking this tool you MUST ask the user whether the new bug(s) should ALSO be appended to the Bug list master tab. Possible answers:\n  • `release_only` — only the release row's `Status` is updated with the bug No(s); nothing is added to Bug list. Use this when the user supplies existing bug No(s) (already filed previously) or wants the bugs tracked only in the release notes.\n  • `both` — the bug(s) belong on BOTH tabs. The agent MUST first call `sheet_append_row(sheet_name='Bug list', values={...})` for each new bug, capture the auto-assigned `No` from each response, then call this tool with `bug_list_decision='both'` and `bug_nos=[<the captured No's>]`.\n\nThe required `bug_list_decision` parameter MUST match the user's confirmed choice. The tool does NOT auto-append to Bug list — that's the agent's responsibility BEFORE this call when the decision is `both`. The parameter is enforced as a contract so the agent cannot silently skip the question.\n\nWhen `verdict='no_bugs'`, do NOT pass `bug_nos` or `bug_list_decision`; the tool rejects the call if either is set.",
+  {
+    release_version: z.string().describe("Full sub-version with v-prefix and 4 dot-segments, e.g. 'v26.5.1.2'. The tool derives the parent tab (v26.5.1.x)."),
+    task_id: z.string().describe("Release row identifier — the `#` cell value, e.g. 'TS-RND-0309'. Must match /^TS-RND-\\d+$/i."),
+    verdict: z.enum(["bugs_found", "no_bugs"]).describe("'bugs_found' → write bug No(s) into Status, paint # red. 'no_bugs' → write Status='CLOSED', paint # green."),
+    bug_nos: z.array(z.union([z.number(), z.string()])).optional().describe("Required when verdict='bugs_found'. Bug No(s) to write into the Status cell, one per line. Numbers or numeric strings. Reject empty arrays."),
+    bug_list_decision: z.enum(["release_only", "both"]).optional().describe("Required when verdict='bugs_found'. 'release_only' = only the release row is updated (bug_nos already exist in Bug list, or the user wants release-only tracking). 'both' = the agent has ALREADY appended each new bug to Bug list via sheet_append_row and is passing the captured No(s) here. Tool does NOT auto-append — see BUG LIST PROMPT RULE in the description."),
+  },
+  async ({ release_version, task_id, verdict, bug_nos, bug_list_decision }) => {
+    // ── Validate release_version format ────────────────────────────────
+    const versionPattern = /^v\d+\.\d+\.\d+\.\d+$/;
+    if (!versionPattern.test(release_version)) {
+      return textResult({
+        error: "invalid_release_version",
+        message: `release_version must match /^v\\d+\\.\\d+\\.\\d+\\.\\d+$/ (e.g. 'v26.5.1.2'). Got: '${release_version}'.`,
+      });
+    }
+    // ── Validate task_id format ────────────────────────────────────────
+    const taskIdPattern = /^TS-RND-\d+$/i;
+    if (!taskIdPattern.test(task_id)) {
+      return textResult({
+        error: "invalid_task_id",
+        message: `task_id must match /^TS-RND-\\d+$/i (e.g. 'TS-RND-0309'). Got: '${task_id}'. Release rows are identified by their TS-RND-* task ID in the # column.`,
+      });
+    }
+    // ── Cross-validate verdict against optional params ─────────────────
+    if (verdict === "bugs_found") {
+      if (!Array.isArray(bug_nos) || bug_nos.length === 0) {
+        return textResult({
+          error: "bug_nos_required",
+          message: "verdict='bugs_found' requires a non-empty bug_nos array — at least one bug No must be written into the Status cell.",
+        });
+      }
+      if (bug_list_decision == null) {
+        return textResult({
+          error: "bug_list_decision_required",
+          message: "verdict='bugs_found' requires bug_list_decision ('release_only' or 'both'). Before calling, ask the user whether the bug(s) should also be appended to Bug list — see BUG LIST PROMPT RULE in the tool description. If the user picked 'both', append each new bug to Bug list via sheet_append_row FIRST, capture the auto-assigned No's, then call this tool with bug_list_decision='both' and bug_nos=[<captured No's>].",
+        });
+      }
+    } else {
+      // verdict === "no_bugs": neither extra param should be set
+      if (bug_nos != null) {
+        return textResult({
+          error: "bug_nos_not_allowed",
+          message: "verdict='no_bugs' must NOT carry bug_nos — there are no bugs to record. Remove bug_nos, or change the verdict to 'bugs_found' if bugs were actually found.",
+        });
+      }
+      if (bug_list_decision != null) {
+        return textResult({
+          error: "bug_list_decision_not_allowed",
+          message: "verdict='no_bugs' must NOT carry bug_list_decision — the Bug list prompt only applies when bugs were found. Remove bug_list_decision.",
+        });
+      }
+    }
+    // ── Derive tab name ────────────────────────────────────────────────
+    const parts = release_version.split(".");
+    const tabName = parts.slice(0, -1).join(".") + ".x";
+
+    // ── Build the write payload ────────────────────────────────────────
+    let statusValue;
+    let colors;
+    if (verdict === "no_bugs") {
+      statusValue = "CLOSED";
+      colors = { "#": "#20ff1c" };
+    } else {
+      // Newline-separated; one bug No per line. Trim each cell to avoid
+      // accidental whitespace in user-supplied strings.
+      statusValue = bug_nos.map((n) => String(n).trim()).join("\n");
+      colors = { "#": "#FF0000" };
+    }
+
+    // Pass task_id straight through as rowNo — the BugSheetOp Office Script
+    // matches release rows by the `#` column value (string-equality), which
+    // for release rows is the TS-RND-* task ID.
+    const r = await callSheetFlow("update", task_id, { Status: statusValue }, tabName, colors);
+    if (!r.ok) {
+      return textResult({
+        error: "flow_call_failed",
+        message: r.error,
+        tab_attempted: tabName,
+        task_id,
+      });
+    }
+    return textResult({
+      success: true,
+      release: release_version,
+      tab: tabName,
+      task_id,
+      verdict,
+      status_written: statusValue,
+      color_applied: colors["#"],
+      bug_nos: verdict === "bugs_found" ? bug_nos : null,
+      bug_list_decision: verdict === "bugs_found" ? bug_list_decision : null,
+      flow_result: r.result,
+    });
+  }
+);
+
 // ── Start Server ────────────────────────────────────────────────────────────
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -1143,6 +1143,128 @@ and should be driven through the bug-routing prompt, not through this
 read-and-verify shortcut. Always pass an explicit release tab name like
 `26.5.1.x`.
 
+### Prompt-style — verify a release row (`sheet_verify_release_row`)
+
+Companion to `sheet_get_release_modules`. Once the agent has read the
+release table, walked each row's modules through student-mcp, and
+actually verified the feature against the build, **the verdict gets
+recorded back into the release tab** via `sheet_verify_release_row`.
+This is the only tool that touches the TS-RND-* feature rows *above*
+the `Bug Fix` marker — `sheet_update_row` is for the numeric-keyed bug
+rows *below*.
+
+Natural prompt:
+
+> "I just finished verifying `TS-RND-0309` in `v26.5.1.2`. **No bugs**
+> — mark it closed on the release tab."
+
+Or, when bugs WERE found:
+
+> "Verified `TS-RND-0309` in `v26.5.1.2`. **Found 2 bugs.** Should I
+> also add them to the Bug list, or just record them on the release
+> row?"
+
+#### What the tool writes
+
+| Verdict | `Status` cell | `#` cell colour |
+|---|---|---|
+| `no_bugs` | `CLOSED` (literal) | 🟩 `#20ff1c` (green) |
+| `bugs_found` | bug No(s) joined by `\n` (one per line) | 🟥 `#FF0000` (red) |
+
+Other release-row columns (`Modules`, `Changes Summary`, `Developer
+In Charge`, etc.) are **never touched** — they belong to RnD / PM.
+
+#### The "also update Bug list?" prompt — enforced
+
+When the verdict is `bugs_found`, the agent **must** ask the user one
+question before calling the tool:
+
+> *"Add the new bug(s) to the `Bug list` master tab too, or only record
+> them on the release row? (both / release_only)"*
+
+The tool requires a `bug_list_decision` parameter that matches the
+answer. It refuses to run if the param is missing:
+
+```
+{
+  "error": "bug_list_decision_required",
+  "message": "verdict='bugs_found' requires bug_list_decision …"
+}
+```
+
+Two answer paths:
+
+- **`release_only`** — the user already filed the bug(s) elsewhere, or
+  wants release-only tracking. The agent supplies the existing bug
+  No(s) directly. Nothing is added to `Bug list`.
+- **`both`** — the agent FIRST calls `sheet_append_row(sheet_name='Bug list', values={…})`
+  once per new bug, captures the auto-assigned `No` from each
+  response, **then** calls `sheet_verify_release_row` with
+  `bug_list_decision='both'` and `bug_nos=[<captured No's>]`. The tool
+  does **not** auto-append — keeping it single-purpose lets the Bug
+  list values stay under the agent's prompt control.
+
+```
+// Two-step path when decision = "both":
+sheet_append_row({
+  sheet_name: "Bug list",
+  values: {
+    Title: "Visitor pass prints with wrong vehicle plate",
+    Steps: "1. …\n2. …",
+    "Expected Result": "Plate matches the registration",
+    "Actual Result":   "Plate is blank",
+    Status: "Open",
+    "Found in Release": "v26.5.1.2"
+  }
+})
+// → flow returns the newly assigned No (e.g. 901)
+
+sheet_verify_release_row({
+  release_version: "v26.5.1.2",
+  task_id: "TS-RND-0309",
+  verdict: "bugs_found",
+  bug_nos: [901],
+  bug_list_decision: "both"
+})
+```
+
+```
+// Single-step path when decision = "release_only":
+sheet_verify_release_row({
+  release_version: "v26.5.1.2",
+  task_id: "TS-RND-0309",
+  verdict: "bugs_found",
+  bug_nos: [654, 655],          // already exist in Bug list
+  bug_list_decision: "release_only"
+})
+```
+
+```
+// No-bugs path — neither bug_nos nor bug_list_decision are accepted:
+sheet_verify_release_row({
+  release_version: "v26.5.1.2",
+  task_id: "TS-RND-0309",
+  verdict: "no_bugs"
+})
+// → Status="CLOSED", # painted green. Done.
+```
+
+#### Failure modes
+
+| Error code | Meaning |
+|---|---|
+| `invalid_release_version` | `release_version` doesn't match `/^v\d+\.\d+\.\d+\.\d+$/` (e.g. missing `v`, wrong segment count) |
+| `invalid_task_id` | `task_id` doesn't match `/^TS-RND-\d+$/i` — release rows are keyed by their TS-RND-* identifier |
+| `bug_nos_required` | `verdict='bugs_found'` but `bug_nos` is missing/empty |
+| `bug_list_decision_required` | `verdict='bugs_found'` but the agent skipped the Bug list prompt — the contract-enforcement param wasn't supplied |
+| `bug_nos_not_allowed` / `bug_list_decision_not_allowed` | `verdict='no_bugs'` but one of the bugs-found-only params was set — clean up the call before retrying |
+| `flow_call_failed` | Power Automate flow rejected the write. Most common cause: workbook open in Excel desktop (locks the script session); close it and retry. |
+
+> 🎨 **Colour writes depend on the flow's `colorsJson` binding.** Same
+> caveat as the Auto-color section above — if `BugSheetOp.ts` was
+> redeployed without binding `colorsJson` on the *Run Script* action,
+> the Status text still writes but the `#` cell stays uncoloured.
+
 > 🔒 **PMv2-only.** The sheet reader is hard-wired to the PMv2 Bug list
 > workbook (`PMV2- Test Result.xlsx`) via a single Power Automate flow.
 > It cannot read sheets for other products (TimeTec Maintenance, HRv2,
