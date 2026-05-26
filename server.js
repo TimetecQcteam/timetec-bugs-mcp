@@ -637,7 +637,7 @@ server.tool(
 // ── Tool: create_bug ────────────────────────────────────────────────────────
 server.tool(
   "create_bug",
-  "Create a new bug. Title is auto-built by joining: product - solution - platform - bug_summary (e.g. 'PM V1 - TimeTec Maintenance - App - Lacking indicator...'). Description is auto-built from steps_to_reproduce, expected_result, and actual_result. Accepts NAMES or numeric IDs for product/module/category/assignees. Pass related_task as 'TS-RND-0309' or a numeric id to link a task.\n\n**BUG ROUTING RULE (must read before calling):** Before invoking this tool, you MUST ask the user where to file the bug. Possible answers:\n  • `tracker_only` — file only to dt.timeteccloud.com (the TimeTec Project dashboard).\n  • `tracker_and_excel` — file to dt.timeteccloud.com AND append a row to PMv2- Test Result.xlsx.\n  • `excel_only` — DO NOT use create_bug; use `sheet_append_row` directly instead.\n  • `neither` — DO NOT call any filing tool.\n\nThe required `destination` parameter MUST match the user's confirmed choice. This tool will refuse to run without it.\n\n**TASK ID RULE (must read before calling):** Before invoking this tool you MUST also ask the user whether this bug links to a Task ID (e.g. TS-RND-0309). Acceptable answers:\n  • `with_task` — yes, link it; the user provided a Task ID → pass it via `related_task`.\n  • `no_task`   — no Task ID for this bug; do NOT pass `related_task`.\n\nThe required `task_decision` parameter MUST match the user's confirmed choice. The tool refuses to run if the contract is broken (e.g. `task_decision: 'with_task'` but `related_task` is missing, or `task_decision: 'no_task'` but `related_task` is set). Silently omitting the question is forbidden — every bug filing must record an explicit task-link decision.",
+  "Create a new bug. Title is auto-built by joining: product - solution - platform - bug_summary (e.g. 'PM V1 - TimeTec Maintenance - App - Lacking indicator...'). Description is auto-built from steps_to_reproduce, expected_result, and actual_result. Accepts NAMES or numeric IDs for product/module/category/assignees. Pass related_task as 'TS-RND-0309' or a numeric id to link a task.\n\n**BUG ROUTING RULE (must read before calling):** Before invoking this tool, you MUST ask the user where to file the bug. Possible answers:\n  • `tracker_only` — file only to dt.timeteccloud.com (the TimeTec Project dashboard).\n  • `tracker_and_excel` — file to dt.timeteccloud.com AND append a row to PMv2- Test Result.xlsx.\n  • `excel_only` — DO NOT use create_bug; use `sheet_append_row` directly instead.\n  • `neither` — DO NOT call any filing tool.\n\nThe required `destination` parameter MUST match the user's confirmed choice. This tool will refuse to run without it.\n\n**TASK ID RULE (must read before calling):** Before invoking this tool you MUST also ask the user whether this bug links to a Task ID (e.g. TS-RND-0309). Acceptable answers:\n  • `with_task` — yes, link it; the user provided a Task ID → pass it via `related_task`.\n  • `no_task`   — no Task ID for this bug; do NOT pass `related_task`.\n\nThe required `task_decision` parameter MUST match the user's confirmed choice. The tool refuses to run if the contract is broken (e.g. `task_decision: 'with_task'` but `related_task` is missing, or `task_decision: 'no_task'` but `related_task` is set). Silently omitting the question is forbidden — every bug filing must record an explicit task-link decision.\n\n**OWNERSHIP RULE (must read before calling):** Every bug needs SOMEONE to route to — either a Task (which carries assignees) or an explicit assignee. The tool rejects calls where BOTH `related_task` and `assignees` are missing/empty. If the user gives a Task ID → set task_decision='with_task' and pass related_task; ownership is inherited from the task. If the user gives a developer/team name → set task_decision='no_task' and pass it via `assignees` (name/email/id). If the user provides neither, do NOT call this tool — re-prompt them for one of the two and only file when they answer.",
   {
     product: z.union([z.string(), z.number()]).describe("Product name (e.g. 'TimeTec HR - Version 2', 'PM V1') or numeric ID"),
     solution: z.string().optional().describe("Solution name for the title (e.g. 'TimeTec Maintenance', 'TimeTec VMS', 'iNeighbour'). Omit if not applicable."),
@@ -677,6 +677,19 @@ server.tool(
     if (params.task_decision === "no_task" && params.related_task != null) {
       return textResult({
         error: "task_decision='no_task' must NOT be combined with a related_task value. Either remove related_task, or set task_decision='with_task' to confirm the user supplied a Task ID.",
+      });
+    }
+    // Enforce OWNERSHIP RULE — every TimeTec project bug needs SOMEONE
+    // it routes to: either a Task (which carries assignees implicitly) or
+    // an explicit assignee. A bug with neither is ownerless and gets lost
+    // in the queue. Re-prompt the user for one of the two.
+    const hasAssignees = params.assignees != null && (
+      Array.isArray(params.assignees) ? params.assignees.length > 0 : true
+    );
+    const hasTask = params.related_task != null;
+    if (!hasTask && !hasAssignees) {
+      return textResult({
+        error: "Bug must have an owner: pass either a related_task (Task ID like 'TS-RND-0309') OR at least one assignee (name/email/id). The current call has neither — the bug would be filed with no one to route it to. Ask the user for one of: (a) the Task ID this bug belongs to, or (b) the developer/team to assign it to. If they don't know either, do NOT file the bug — defer until they do.",
       });
     }
     let lookups;
@@ -2184,10 +2197,13 @@ server.tool(
 const SHEET_FLOW_URL = process.env.SHEET_FLOW_URL ||
   "https://defaultdb45ae3039214816bd8498cf14d5a1.7b.environment.api.powerplatform.com/powerautomate/automations/direct/workflows/be69b98b1a5d4adea6369a34c61464f8/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=GPYOJQ8WCUa1MtF4tfJpcPZ7Vq4kjKyFkJj0erBPcJo";
 
-// POST { action, rowNo, valuesJson, sheetName } to the Power Automate flow and
-// return the parsed BugSheetOp result as { ok: true, result } — or { ok: false, error }.
+// POST { action, rowNo, valuesJson, sheetName, colorsJson } to the Power Automate
+// flow and return the parsed BugSheetOp result as { ok: true, result } — or
+// { ok: false, error }.
 // sheetName defaults to "" (the script falls back to "Bug list").
-async function callSheetFlow(action, rowNo, values, sheetName) {
+// colors is an optional { columnName: hex } map; passed to BugSheetOp's colorsJson
+// param which fills the matching cells with the hex colors.
+async function callSheetFlow(action, rowNo, values, sheetName, colors) {
   if (!SHEET_FLOW_URL) {
     return { ok: false, error: "SHEET_FLOW_URL is not configured." };
   }
@@ -2196,6 +2212,7 @@ async function callSheetFlow(action, rowNo, values, sheetName) {
     rowNo: rowNo == null ? 0 : rowNo,
     valuesJson: values == null ? "" : JSON.stringify(values),
     sheetName: sheetName == null ? "" : String(sheetName),
+    colorsJson: colors == null ? "" : JSON.stringify(colors),
   };
   let res;
   try {
@@ -2258,14 +2275,16 @@ function excelSerialToday() {
 // ── Tool: sheet_update_row ──────────────────────────────────────────────────
 server.tool(
   "sheet_update_row",
-  "Update cells of an existing row in the PMV2 Bug list spreadsheet. Identify the row by its `No` column value and pass `values` keyed by column header name — only those cells are written. Pass `sheet_name` to target a tab other than `Bug list`. Runs through the Power Automate flow (no Microsoft login needed).\n\n**AUTO-STAMP:** When `values.Status` is set to a closed-equivalent value (case-insensitive match against `Closed`/`CLOSED`/`closed`) AND the caller did NOT supply `Date Closed by QC` in the same payload, the tool auto-pairs `Date Closed by QC = <today's Excel serial>` so the verification date is recorded automatically. Pass an explicit `Date Closed by QC` to override.",
+  "Update cells of an existing row in the PMV2 Bug list spreadsheet. Identify the row by its `No` column value and pass `values` keyed by column header name — only those cells are written. Pass `sheet_name` to target a tab other than `Bug list`. Runs through the Power Automate flow (no Microsoft login needed).\n\n**AUTO-STAMP (Bug list only):** When `values.Status` is set to a closed-equivalent value (case-insensitive match against `Closed`/`CLOSED`/`closed`) AND the caller did NOT supply `Date Closed by QC` in the same payload, the tool auto-pairs `Date Closed by QC = <today's Excel serial>` so the verification date is recorded automatically. Pass an explicit `Date Closed by QC` to override.\n\n**AUTO-COLOR (release tabs only):** On a release tab (any `sheet_name` other than `Bug list`), when `values.Status` is set to `REOPEN` or `CLOSED` (case-insensitive) AND the caller did NOT pass `colors`, the tool auto-injects a fill on the row's `#` cell: `#FF0000` (red) for REOPEN, `#20ff1c` (green) for CLOSED. Pass an explicit `colors` object to override.",
   {
     no: z.number().describe("The target row's `No` column value."),
     values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
       .describe("Object of { columnHeaderName: newValue }. Only these columns are written; everything else is left untouched."),
     sheet_name: z.string().optional().describe("Worksheet tab name (e.g. '26.5.1.x'). Defaults to 'Bug list' if omitted."),
+    colors: z.record(z.string(), z.string()).optional()
+      .describe("Optional { columnHeaderName: hexColor } map (e.g. { \"#\": \"#FF0000\" }) — fills the matching cells on the target row with the given fill colors. Pass an empty object {} to suppress the release-tab auto-color."),
   },
-  async ({ no, values, sheet_name }) => {
+  async ({ no, values, sheet_name, colors }) => {
     // Auto-stamp Date Closed by QC when Status is being set to "Closed"
     // on the Bug list master tab. Release tabs (v26.5.1.x etc.) don't
     // have this column, so injecting it there would fail the whole
@@ -2281,7 +2300,20 @@ server.tool(
         && !("Date Closed by QC" in enriched)) {
       enriched["Date Closed by QC"] = excelSerialToday();
     }
-    const r = await callSheetFlow("update", no, enriched, sheet_name);
+    // Auto-color the # cell on release-tab Status writes. Skipped when the
+    // caller passed an explicit `colors` (treat as override — even {} means
+    // "no colors, don't auto-inject"). Skipped on Bug list (no # column —
+    // it uses `No` — and the Status colour convention is release-tab only).
+    let effectiveColors = colors;
+    if (!isBugList && colors === undefined && typeof statusVal === "string") {
+      const statusUpper = statusVal.trim().toUpperCase();
+      if (statusUpper === "REOPEN") {
+        effectiveColors = { "#": "#FF0000" };
+      } else if (statusUpper === "CLOSED") {
+        effectiveColors = { "#": "#20ff1c" };
+      }
+    }
+    const r = await callSheetFlow("update", no, enriched, sheet_name, effectiveColors);
     if (!r.ok) return textResult({ error: "flow_call_failed", message: r.error });
     return textResult(r.result);
   }
@@ -2317,6 +2349,208 @@ server.tool(
     const r = await callSheetFlow("read", no || 0, null, sheet_name);
     if (!r.ok) return textResult({ error: "flow_call_failed", message: r.error });
     return textResult(r.result);
+  }
+);
+
+// ── Tool: sheet_get_release_modules ─────────────────────────────────────────
+// Read a single sub-version section from a release tab and return ONLY the
+// Modules + Changes Summary columns as a markdown table — plus a prompt_to_user
+// that forces the agent into the next step (per-module knowledge check via
+// student-mcp's recall, then a discover-vs-manual ask for any not-found
+// modules). This is the entry point for "verify release notes" workflows.
+//
+// Enforcement shape mirrors student-mcp's recall_srs / report_knowledge_mismatch
+// — the response's prompt_to_user field MUST be surfaced to the user verbatim;
+// the agent must not proceed to verification without the knowledge check.
+server.tool(
+  "sheet_get_release_modules",
+  "Read the Modules + Changes Summary for one sub-version section inside a PMv2 release tab, formatted as a markdown table for the user.\n\n**Tab routing:** given `release_version` like 'v26.5.1.2', the tool reads tab `v26.5.1.x` (strip the last dot-segment, append `.x`). Versions MUST start with `v` and have exactly 4 dot-segments — e.g. 'v26.5.1.2', 'v26.4.1.1'. Anything else is rejected.\n\n**Section parsing:** the tab has multiple sub-version sections separated by `Bug Fix` markers; the section starts at a row whose `#` column equals the requested version (e.g. `v26.5.1.2`) and ends at the next `v*.*.*.*` header row or end of tab. Only data rows (numeric `#`) within that range are returned — section markers and version headers are filtered out.\n\n**Response shape (always includes both):**\n- `table_markdown` — a 3-column markdown table (#, Modules, Changes Summary) for the agent to render to the user.\n- `prompt_to_user` — the next-step instructions the agent MUST follow: for EACH module listed, call student-mcp's `recall` to check if knowledge exists. For NOT-FOUND modules, ASK the user whether to discover via student-mcp first or verify manually. Do NOT begin verification without this check.\n\nReturns `{ error: 'invalid_release_version' | 'section_not_found' | ... }` on failure — no partial output.",
+  {
+    release_version: z.string().describe("Full sub-version with v-prefix and 4 dot-segments, e.g. 'v26.5.1.2'. The tool derives the parent tab (v26.5.1.x) and locates this exact section within it."),
+  },
+  async ({ release_version }) => {
+    // ── Validate version format ─────────────────────────────────────────
+    const versionPattern = /^v\d+\.\d+\.\d+\.\d+$/;
+    if (!versionPattern.test(release_version)) {
+      return textResult({
+        error: "invalid_release_version",
+        message: `release_version must match /^v\\d+\\.\\d+\\.\\d+\\.\\d+$/ (e.g. 'v26.5.1.2'). Got: '${release_version}'. The 'v' prefix is mandatory; all four segments must be digits.`,
+        example_valid: ["v26.5.1.1", "v26.5.1.2", "v26.4.1.1"],
+      });
+    }
+
+    // ── Derive tab name: strip last segment, append '.x' ───────────────
+    // 'v26.5.1.2' → ['v26', '5', '1', '2'] → ['v26', '5', '1'] → 'v26.5.1' → 'v26.5.1.x'
+    const parts = release_version.split(".");
+    const tabName = parts.slice(0, -1).join(".") + ".x";
+
+    // ── Read the whole release tab (one call; parsing distills it) ─────
+    const r = await callSheetFlow("read", 0, null, tabName);
+    if (!r.ok) {
+      return textResult({
+        error: "flow_call_failed",
+        message: r.error,
+        tab_attempted: tabName,
+      });
+    }
+    const data = r.result;
+    if (!data || data.success === false) {
+      return textResult({
+        error: "tab_read_failed",
+        message: (data && data.message) || `Failed to read tab '${tabName}'. Verify the tab exists in the PMV2 workbook.`,
+        tab_attempted: tabName,
+        underlying: data,
+      });
+    }
+
+    const allRows = Array.isArray(data.rows) ? data.rows : [];
+    const headers = Array.isArray(data.headers) ? data.headers : [];
+    // Required columns for this tool — fail loudly if missing
+    const missingCols = ["#", "Modules", "Changes Summary"].filter((c) => !headers.includes(c));
+    if (missingCols.length > 0) {
+      return textResult({
+        error: "missing_required_columns",
+        message: `Release tab '${tabName}' is missing required column(s): ${missingCols.join(", ")}. This tool needs '#', 'Modules', and 'Changes Summary' to build the verification table.`,
+        headers_seen: headers,
+      });
+    }
+
+    // ── Walk rows: find section header, collect RELEASES only ──────────
+    //
+    // Real layout (verified 2026-05-26 on v26.5.1.x):
+    //   Version header row:  # == "Version:",  Status == "v26.5.1.2"
+    //   Release rows:        TS-RND-* task IDs in #, Modules + Changes Summary
+    //                        — these are the FEATURES/TASKS being released
+    //   "Bug Fix*" marker:   # ~ /^Bug Fix\b/ (variants: "Bug Fix",
+    //                        "Bug Fix QC", "Bug Fix Support & PDT", ...)
+    //                        — this row SEPARATES releases from bug titles
+    //   Bug-title rows:      numeric # with bug descriptions in Modules
+    //                        — these belong to a SEPARATE verification flow
+    //                        (Bug list), NOT release-note verification
+    //   Empty padding rows:  all cells blank
+    //
+    // For release-note verification we collect ONLY the release rows:
+    //   start: Status cell of a "Version:" row == release_version
+    //   end:   FIRST occurrence of either (a) a "Bug Fix*" marker, or
+    //          (b) the next "Version:" header
+    // Anything below the "Bug Fix" marker is bug titles, not releases.
+    let inSection = false;
+    const sectionRows = [];
+    const taskIdPattern = /^TS-RND-\d+$/i;
+    let endReason = null;       // "bug_fix" | "next_version" | "end_of_tab"
+    let endMarker = null;       // verbatim # cell text of the boundary row (bug_fix case)
+    let bugTitlesScope = null;  // "qc" | "support_pdt" | "other"  — guidance for the future Bug list flow
+    for (const row of allRows) {
+      const hashCell = String(row["#"] ?? "").trim();
+      const statusCell = String(row["Status"] ?? "").trim();
+      const isVersionHeader = hashCell === "Version:";
+      if (!inSection) {
+        if (isVersionHeader && statusCell === release_version) {
+          inSection = true;
+        }
+        continue;
+      }
+      // Section end (1): row whose # cell CONTAINS "Bug Fix" anywhere
+      // (not strictly prefixed). Variants observed: "Bug Fix",
+      // "Bug Fix QC", "Bug Fix Support & PDT", and potentially others
+      // where "Bug Fix" sits mid-string. Bug titles begin below this row.
+      //
+      // Classify the marker so any downstream flow (e.g. the future Bug list
+      // verification) knows whether the bug rows below are in-scope:
+      //   - "qc"          → QC verification scope. Covers plain "Bug Fix",
+      //                     "Bug Fix QC", and anything else without a
+      //                     Support/PDT label. This is the default when
+      //                     the marker doesn't explicitly opt out.
+      //   - "support_pdt" → IGNORE rows below entirely (out of QC scope).
+      //                     Triggered by any of "support", "pdt" appearing
+      //                     in the marker cell.
+      if (/bug\s*fix/i.test(hashCell)) {
+        endReason = "bug_fix";
+        endMarker = hashCell;
+        bugTitlesScope = /support|pdt/i.test(hashCell) ? "support_pdt" : "qc";
+        break;
+      }
+      // Section end (2): next "Version:" header
+      if (isVersionHeader) {
+        endReason = "next_version";
+        break;
+      }
+      // Within the releases block: keep TS-RND-* task rows; drop blank padding
+      // (numeric-# rows shouldn't appear above the Bug Fix marker, but if
+      // they do, defensive-skip them rather than mislabel as a release)
+      const isTaskRow = taskIdPattern.test(hashCell);
+      if (!isTaskRow) {
+        continue;
+      }
+      sectionRows.push({
+        "#": hashCell,
+        "Modules": String(row["Modules"] ?? "").trim(),
+        "Changes Summary": String(row["Changes Summary"] ?? "").trim(),
+      });
+    }
+    if (inSection && endReason === null) endReason = "end_of_tab";
+
+    if (!inSection) {
+      return textResult({
+        error: "section_not_found",
+        message: `Version header '${release_version}' was not found in tab '${tabName}'. Scanned ${allRows.length} rows. Verify the version exists in the workbook (case-sensitive, exact match against the # column).`,
+        tab: tabName,
+      });
+    }
+    if (sectionRows.length === 0) {
+      return textResult({
+        error: "empty_section",
+        message: `Found version header '${release_version}' in tab '${tabName}' but no data rows follow it before the next version header. The section is empty — nothing to verify.`,
+        tab: tabName,
+      });
+    }
+
+    // ── Format as markdown table ───────────────────────────────────────
+    const esc = (s) => String(s).replace(/\|/g, "\\|").replace(/\n/g, " ");
+    let tableMarkdown = `| # | Modules | Changes Summary |\n|---|---|---|\n`;
+    for (const r of sectionRows) {
+      tableMarkdown += `| ${r["#"]} | ${esc(r.Modules)} | ${esc(r["Changes Summary"])} |\n`;
+    }
+
+    // ── Build the prompt_to_user (the enforcement payload) ─────────────
+    // Unique-ified, normalized module list for the knowledge-check step.
+    const moduleSet = new Set();
+    for (const r of sectionRows) {
+      const m = r.Modules.trim();
+      if (m) moduleSet.add(m);
+    }
+    const uniqueModules = Array.from(moduleSet);
+
+    const promptToUser = [
+      `Show the markdown table above to the user verbatim — it lists every bug/change in release ${release_version} that needs verification.`,
+      ``,
+      `Then, for EACH unique module in the table, call student-mcp's recall to check if knowledge exists:`,
+      `  recall({ app: "pmv2", module_contains: "<module>", full: false })`,
+      ``,
+      `Unique modules to check (${uniqueModules.length}):`,
+      ...uniqueModules.map((m, i) => `  ${i + 1}. ${m}`),
+      ``,
+      `Report per-module: "FOUND" (with rule count) or "NOT FOUND".`,
+      ``,
+      `For each NOT-FOUND module, you MUST ask the user:`,
+      `  "Module '<name>' has no rules in student-mcp yet. Do you want me to (a) DISCOVER the module first via student-mcp before verifying the release changes, or (b) verify the release changes MANUALLY without prior knowledge? Pick a/b."`,
+      ``,
+      `Do NOT begin verifying any release changes until every NOT-FOUND module has been adjudicated. Skipping this step risks verifying against guessed behaviour instead of grounded knowledge.`,
+    ].join("\n");
+
+    return textResult({
+      success: true,
+      release: release_version,
+      tab: tabName,
+      count: sectionRows.length,
+      end_reason: endReason, // "bug_fix" (most common) | "next_version" | "end_of_tab"
+      end_marker: endMarker, // verbatim # cell text when end_reason === "bug_fix"
+      bug_titles_scope: bugTitlesScope, // "qc" | "support_pdt" | "other" | null — guidance for the future Bug list flow
+      unique_modules: uniqueModules,
+      rows: sectionRows,
+      table_markdown: tableMarkdown,
+      prompt_to_user: promptToUser,
+    });
   }
 );
 
