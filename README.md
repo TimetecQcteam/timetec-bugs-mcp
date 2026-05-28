@@ -145,12 +145,12 @@ What the agent does:
 
 **Example prompts:**
 
-> Verify bug **BG-1234** on Maintenance.
+> Verify bug **BG-1234**.
 
 > Re-check TimeTec project bug **BG-1234**. If the fix held, ready it for live.
 
 > Get bug **BG-1234**, reproduce the Steps from its description in the
-> Maintenance SIT build, then ask me how to status it.
+> SIT build, then ask me how to status it.
 
 What the agent does:
 
@@ -536,6 +536,8 @@ override, leave the rest to fall back to the interactive flow:
 | `-AdbPath <path>` | ADB path |
 | `-OneDriveSyncFolder <path>` | OneDrive sync folder |
 | `-SharepointBaseUrl <url>` | SharePoint base URL |
+| `-SheetFlowUrl <url>` | Power Automate flow URL for THIS entry's Excel workbook (Path A single-workbook mode). Leave blank to inherit the baked-in default (PMv2 Bug list). Set per-registration when adding a second MCP entry pointing at a different workbook — see *Multi-workbook setup* below. |
+| `-SheetFlowUrls '<json>'` | **Path B (recommended for 2+ workbooks).** JSON map of `{ workbookKey: flowUrl }`, e.g. `'{"pmv2":"https://...","ivizit":"https://...","ineighbour-2":"https://..."}'`. One MCP entry covers many workbooks; agent passes `workbook` per call. **Validated at install time** — bad JSON aborts the install. When set, the server REQUIRES `workbook` on every `sheet_*` call. |
 
 > 🔒 **Password handling.** Passing `-Password` puts the value on the
 > PowerShell command line. PowerShell's history is usually disabled
@@ -543,6 +545,174 @@ override, leave the rest to fall back to the interactive flow:
 > `tasklist` during the few seconds the installer runs. If that's a
 > concern, decline the agent's offer and run `install.cmd` yourself
 > — the hidden `Read-Host` is safer.
+
+---
+
+## Multi-workbook setup — two patterns
+
+Out of the box, the `sheet_*` tools target ONE Excel workbook
+(`PMV2- Test Result.xlsx`). To support more workbooks (iVizit Test
+Result, HRv2 Test Result, Maintenance Test Result, etc.) there are two
+patterns. **Path B is the recommended one** for 2+ workbooks.
+
+### Path B (recommended) — one MCP entry, many workbooks via SHEET_FLOW_URLS
+
+Set the `SHEET_FLOW_URLS` env var as a JSON map of `{ workbookKey: flowUrl }`.
+The agent picks which workbook to hit per call via a `workbook` argument.
+
+**Env block (in `~/.claude.json` under the MCP entry's `env`):**
+
+```jsonc
+{
+  "SHEET_FLOW_URLS": "{\"pmv2\":\"https://...pmv2-flow...\",\"ivizit\":\"https://...ivizit-flow...\",\"hrv2\":\"https://...hrv2-flow...\"}",
+  // ... other env vars
+}
+```
+
+Keys are case-insensitive at lookup time. Pick short, product-named keys
+(`pmv2`, `ivizit`, `hrv2`, `maintenance`) — the agent prompts the user
+in those terms.
+
+**Tool calls now take a `workbook` arg:**
+
+```js
+sheet_read({ workbook: "ivizit", sheet_name: "Bug list", no: 42 })
+sheet_update_row({ workbook: "ivizit", sheet_name: "v2.1.x", no: 42, values: { Status: "REOPEN" } })
+sheet_get_release_modules({ workbook: "ivizit", release_version: "v2.1.0" })
+sheet_append_row({ workbook: "pmv2", values: { ... } })
+```
+
+> 🛡️ **HARD-ENFORCED: the user MUST name the workbook (from now on).**
+> When `SHEET_FLOW_URLS` is configured (multi-workbook mode), every
+> `sheet_*` call MUST pass `workbook`. Omitting it returns
+> `{ error: "workbook_required", hint: "...", available: [...] }`
+> rather than silently defaulting to PMv2 — silently writing to the
+> wrong workbook is a costly mistake the server refuses to make.
+>
+> Passing a `workbook` key that isn't in the `SHEET_FLOW_URLS` map
+> returns `{ error: "unknown_workbook", available: [...] }` with the
+> list of valid keys. The agent should re-prompt the user, not retry
+> with a default.
+
+**Prompting convention** — from now on the user must name the
+workbook in every Excel-touching prompt:
+
+| User says | Agent passes `workbook:` |
+|---|---|
+| *"verify No. 655 on **PMv2** release v26.5.1.x"* | `"pmv2"` |
+| *"file this bug to the **iVizit** Excel"* | `"ivizit"` |
+| *"give me modules in **HRv2** release v2.1.0"* | `"hrv2"` |
+| *"verify No. 12 on the Excel"* (no product) | **STOP — agent must ask which workbook.** Don't guess. |
+
+The agent's job when the prompt is ambiguous: surface the list of
+configured workbooks (from the `available` field in the
+`workbook_required` error) and ask the user to pick one. Don't fall back
+to PMv2 — that's a silent-data-loss hazard.
+
+### Onboarding a NEW tester (Path B is already wired team-wide)
+
+When the flows + scripts already exist (team-wide setup is a one-time
+cost; new testers don't redo it), getting a new tester running takes
+**~10 minutes total**:
+
+| # | Step | Owned by |
+|---|---|---|
+| 1 | Install Claude Code | New tester |
+| 2 | Request SharePoint Edit access to the QC Test site (Part 2 → Step 0) | New tester ↔ access-holder |
+| 3 | Set up OneDrive sync folder + SharePoint shortcut (Part 2 → Step A/B) | New tester |
+| 4 | Get the team's `SHEET_FLOW_URLS` JSON value from internal channel (Slack DM, Teams private message, secrets vault — NOT a public wiki, the URLs contain SAS tokens) | Team lead → new tester |
+| 5 | Run installer with the multi-workbook flag in one shot ↓ | New tester |
+| 6 | Restart Claude Code | New tester |
+
+**The one-shot install command** (replace the email/password/JSON
+placeholders with their values):
+
+```powershell
+install.ps1 -Name timetec-bugs-live `
+  -Environment Live `
+  -Email '<their.email@timeteccloud.com>' `
+  -Password '<their-password>' `
+  -SheetFlowUrls '{"pmv2":"<PMv2 URL>","ivizit":"<iVizit URL>","ineighbour-2":"<iNeighbour-2 URL>"}'
+```
+
+The installer validates the JSON at install time — if you typo'd a
+quote or missed a brace, it aborts with a clear error before writing to
+`~/.claude.json`. (Bad JSON would silently fall back to single-workbook
+mode at runtime, which is the worst kind of failure.)
+
+After restart, all three workbooks are addressable via
+`sheet_*({ workbook: "pmv2" | "ivizit" | "ineighbour-2", ... })`.
+
+### Onboarding security note — flow URLs are credentials
+
+The flow URLs in the JSON map include SAS tokens (the `sig=...` query
+string). **Anyone with the URL can POST to the flow**, which means they
+can write to the workbook. Treat the JSON value as you'd treat a
+password:
+
+- ✅ Share via Slack DM, Teams private channel, password vault (1Password / Bitwarden), or an internal SharePoint doc with restricted access
+- ❌ DO NOT put in: a public wiki, the repo README, a public Slack channel, email-to-multiple-recipients, screenshots posted in public spaces
+- 🔄 If a URL leaks: rotate the flow's SAS token in Power Automate, regenerate the URL, update everyone's `~/.claude.json`. There's no per-user revocation — it's all-or-nothing per flow.
+
+If you want stricter access control later, the path is to switch the
+flows from anonymous SAS URLs to OAuth-protected webhooks — more
+setup, requires per-user auth. Out of scope for the current capstone.
+
+### Path A (simpler, fewer moving parts) — one MCP entry per workbook
+
+If you only have 2 workbooks and don't want to manage a JSON-map env
+var, you can register the MCP under a new entry name per workbook, each
+with its own `SHEET_FLOW_URL`. Same as how `timetec-bugs-live` +
+`timetec-bugs-sit` are two registrations of the same code with different
+TimeTec env URLs.
+
+```
+powershell -ExecutionPolicy Bypass -File install.ps1 `
+  -Name timetec-bugs-hrv2 `
+  -Environment Live `
+  -Email <hrv2-tester-email> `
+  -Password <hrv2-tester-password> `
+  -SheetFlowUrl "https://...HRv2-flow..."
+```
+
+The agent picks the right MCP by its registration name (`timetec-bugs-hrv2`
+vs `timetec-bugs-pmv2-excel`). No `workbook` arg needed because each
+entry is hard-wired to one flow.
+
+**Use Path A only when** SHEET_FLOW_URLS would have just 1-2 entries and
+the JSON-map overhead doesn't pay off. **Use Path B when** you have 3+
+workbooks or expect more to be added regularly.
+
+### What you need before adding any new workbook (both paths)
+
+1. **A new Power Automate flow** provisioned by IT, pointing at the new
+   workbook. Same shape as the PMv2 flow: HTTP trigger (anonymous SAS
+   URL) → Run Script action → returns 202 on writes.
+2. **A copy of `BugSheetOp.ts`** deployed inside the new workbook as an
+   Office Script. Same script works on any workbook **as long as the
+   column headers match** (`No` / `#`, `Status`, `Modules`,
+   `Changes Summary`, `Date Closed by QC`, `Remark`, etc. per the
+   *🚨 Hands off the column headers* section in Part 6). If the new
+   workbook uses different column names, the script needs matching edits.
+3. **The flow's webhook URL** (from the HTTP trigger step).
+
+This setup is per-workbook regardless of which path you pick — Path A
+vs Path B only changes how the MCP server is wired to those flows.
+
+### Limitations (both paths)
+
+- **No cross-workbook reads in a single call.** Each `sheet_*` call
+  hits exactly one workbook's flow. To compare data across workbooks,
+  call once per workbook + reconcile in agent context.
+- **One BugSheetOp per workbook.** If you update the script's logic
+  (e.g. add a new auto-stamp column), you need to redeploy the script
+  into every workbook that uses it. There's no central script source —
+  each workbook embeds its own copy.
+- **Live/SIT-style env separation doesn't apply automatically to
+  workbooks.** A `SHEET_FLOW_URLS` map entry (Path B) or a per-workbook
+  MCP entry (Path A) is one workbook regardless of TimeTec env. If you
+  need HRv2-Live + HRv2-SIT separation at the workbook level, that's
+  two flows + two map entries (or two MCP registrations on Path A).
 
 ---
 
@@ -564,6 +734,39 @@ Two environment variables make this work — they are **two views of the same fo
 |---|---|
 | `ONEDRIVE_SYNC_FOLDER` | The folder's **local path** on your PC |
 | `SHAREPOINT_BASE_URL` | The same folder's **web address** in SharePoint |
+
+---
+
+## Part 2 — Full setup walkthrough at a glance
+
+Every single step from "new tester, blank machine" to "verified working".
+Steps 1–8 are browser / File Explorer work. Step 9 is where you pick the
+manual installer (**Step D**) or the prompt-style flow (**Step E**).
+Steps 10–14 are the **acceptance test** — same for both paths.
+
+| # | Action | Where | Section |
+|---|---|---|---|
+| 1 | Request **Edit** access to the QC Test SharePoint site | Browser | Step 0 |
+| 2 | Ping someone with access in person / Teams; wait for the approval email | Teams + email | Step 0 |
+| 3 | Create your personal folder inside the `Documents` library (e.g. `Xavier Low`) | SharePoint browser | Step A |
+| 4 | In the library toolbar, click **Sync** (or **Add shortcut to OneDrive**) | SharePoint browser | Step B |
+| 5 | Confirm the OneDrive systray icon shows the folder as **"up to date"** (green check) | Windows systray | Step B |
+| 6 | Note the local sync path: `C:\Users\<you>\TimeTec Cloud Sdn Bhd\QC Test - Documents\<your folder>` | File Explorer | Step B |
+| 7 | Copy your folder's URL from the SharePoint browser address bar | SharePoint browser | Step C |
+| 8 | Strip any `?...` query string from the URL; ensure spaces are `%20` | (text edit) | Step C |
+| 9 | Wire both values into the MCP env (`ONEDRIVE_SYNC_FOLDER`, `SHAREPOINT_BASE_URL`) | Installer **or** Claude Code prompt | **Step D** (manual) **or** **Step E** (prompt-style) |
+| 10 | **Quit Claude Code completely**, then reopen it | Windows | Step D / E |
+| 11 | **Open a brand-new chat** (do NOT reuse the chat that did the install — its MCP holds the stale env) | Claude Code | Step D / E |
+| 12 | In the new chat, prompt: *"give me the latest screenshot link from my PC"* | Claude Code | Step D / E |
+| 13 | Click the returned SharePoint link | Browser | Step D / E |
+| 14 | Photo loads → ✅ setup is correct. Link 404s → back to Step 0 (Edit access), then OneDrive sync status, then URL encoding | Browser | Step D / E |
+
+> 💡 **Why Step 11 matters.** The MCP server is spawned by Claude Code when
+> the app starts; it inherits env vars from that moment. The chat that
+> ran the installer was spawned **before** the new values existed —
+> testing inside it either errors out or silently uses the old paths.
+> A fresh chat (after a full app restart) is the only way to confirm the
+> env actually took.
 
 ---
 
@@ -649,13 +852,96 @@ Spaces in the URL must be `%20`. `Documents` shows in the URL as `Shared%20Docum
 
 ---
 
-## Part 2 — Step D: Save both values & verify
+## Part 2 — Step D: Save both values & verify (manual installer path)
 
 1. Re-run the installer — at the **OneDrive sync folder** and **SharePoint base URL**
    prompts, paste the two values from Step B and Step C.
-2. **Restart Claude Code.**
-3. Verify: run `pull_pc_media` (or `pull_photos`). A returned `attachment_links`
-   URL that opens the image in a browser = setup is correct.
+2. **Quit Claude Code completely** (don't just close the window — exit the
+   app so the MCP server process dies and gets respawned with the new env).
+3. **Reopen Claude Code and start a brand-new chat** (steps 10–11 in the
+   walkthrough table). Reusing the old chat won't work — its MCP was
+   spawned before the new values existed.
+4. In the new chat, prompt:
+
+   > Give me the latest screenshot link from my PC.
+
+5. The agent calls `pull_pc_media` against
+   `C:\Users\Low Mun Hou\Pictures\Screenshots` and returns a SharePoint URL.
+6. **Click the link.** Photo loads in the browser → ✅ setup is correct.
+   Link 404s → check **Edit access** from Step 0 (most common cause),
+   then OneDrive systray status (must be "up to date"), then URL
+   encoding (must use `%20` for spaces).
+
+---
+
+## Part 2 — Step E: Prompt-style setup (let Claude wire the env vars)
+
+Once Step A (folder created on SharePoint) and Step B (synced to laptop)
+are done manually, you can hand the two values to Claude Code instead of
+re-running the installer yourself. This is the day-to-day flow on a
+machine that already has timetec-bugs-mcp installed but isn't pointed at
+your folder yet.
+
+**Example prompt:**
+
+> Please configure timetec-bugs-mcp with my OneDrive + SharePoint paths.
+> - Local folder: `C:\Users\Low Mun Hou\TimeTec Cloud Sdn Bhd\QC Test - Documents\Xavier Low`
+> - SharePoint URL: `https://timeteccloud0.sharepoint.com/sites/QCTest/Shared%20Documents/Xavier%20Low`
+
+The two values map 1:1 to the env vars, regardless of how you phrase them:
+
+| What you say in the prompt | What gets written |
+|---|---|
+| *"local folder"* / *"sync folder"* / *"directory"* | `ONEDRIVE_SYNC_FOLDER` |
+| *"SharePoint URL"* / *"web link"* / *"shortcut URL"* / *"folder URL"* | `SHAREPOINT_BASE_URL` |
+
+What the agent does in response:
+
+1. **Reads the existing `~/.claude.json`** entry for `timetec-bugs-live` /
+   `timetec-bugs-sit` (or whichever registration you're updating) to keep
+   the other env vars — email, password, ADB path, flow URLs — unchanged.
+2. **Runs `install.ps1` non-interactively** with `-OneDriveSyncFolder` and
+   `-SharepointBaseUrl` set to the supplied values. The installer is
+   idempotent, so re-running it is safe.
+3. **Confirms the install output** — looks for the "OneDrive sync folder"
+   and "SharePoint base URL" lines reporting the new values back.
+4. **Tells you to restart Claude Code AND open a new chat** to test —
+   then stops. The setup agent can't verify the new env itself; its MCP
+   was spawned with the old env and won't see the new values until the
+   parent process is restarted. **Don't ask the same chat to "now test
+   it"** — it'll either error out or, worse, silently succeed using stale
+   paths and mislead you into thinking everything's wired.
+
+**You** verify in a fresh chat:
+
+1. Quit Claude Code completely, reopen it, start a **brand-new chat**.
+2. Prompt:
+
+   > Give me the latest screenshot link from my PC.
+
+3. The agent calls `pull_pc_media` against
+   `C:\Users\Low Mun Hou\Pictures\Screenshots` and returns a SharePoint
+   URL.
+4. **Click the link.** If the photo loads in the browser → setup is
+   correct, you're done.
+5. If the link 404s → check **Edit access** from Step 0 (most common
+   cause), then OneDrive systray status (must be "up to date"), then the
+   URL encoding (must use `%20` for spaces).
+
+> ⚠️ **Paste the URL verbatim** with `%20` for spaces. The agent will not
+> re-encode it for you, and mismatched encoding silently breaks link
+> generation later (manifests as 404 on attachment open). Easiest path:
+> open the folder in SharePoint, copy the address-bar URL exactly,
+> strip any `?...` query string — that's the form to paste.
+
+> ℹ️ **First-time setup is still manual** — Steps 0, A, and B (SharePoint
+> access request, folder creation, "Add shortcut to OneDrive") require
+> the browser + the OneDrive desktop client. The agent can't approve
+> your own access request, create folders on SharePoint via API, or
+> click "Sync" in the OneDrive systray for you. Step E only automates
+> Step D — wiring the two paths into the MCP env.
+
+---
 
 ### How the link is built
 
@@ -1396,18 +1682,152 @@ call the tool.
 
 ## Part 6 — Filing a newly-discovered bug (discovery → upload)
 
-> 🚧 **PLACEHOLDER for the full discovery → routing flow.** Ignore the
-> full discovery walkthrough for now — to be taught in a future pass.
-> It will cover: agent surfaces an anomaly during discovery → confirms
-> with user which store to file to (Excel / TimeTec project / both /
-> neither, never auto-file per
-> [[feedback_student_mcp_bug_routing_confirm]]) → gathers Task ID, Steps,
-> Expected, Actual, Severity, attachments → submits via `create_bug` or
-> `sheet_append_row`. The Excel-side specifics below are committed now;
-> the discovery-to-routing fork above them is still pending.
->
-> **For slide generation:** render the placeholder as a single "Coming
-> soon" slide; the Excel-side notes below it as their own slide.
+### Discovery → routing → prompt-template flow
+
+When the agent surfaces an anomaly during discovery, it does **NOT**
+auto-file. The flow is a **two-stage handoff** — the agent gathers, the
+user issues the formal log command. This keeps the user in the driver's
+seat for the actual write (no surprise filings) and lets the user
+copy/paste the final prompt into Slack / handover docs as a record of
+what was filed.
+
+**Stage 1 — Agent asks the destination question (verbatim).**
+
+Right after announcing the finding, the agent must ask which store to
+log to. The exact wording depends on the product the user is testing:
+
+| Product context | Agent asks |
+|---|---|
+| PMv2 / iVizit / iNeighbour-2 (Excel-routed) | *"Which Excel should I log this to — `pmv2`, `ivizit`, or `ineighbour-2`?"* |
+| Maintenance / HRv2 / Parking / iManager / etc. (TimeTec project-routed) | *"Which Task ID in TimeTec project should I file this under? (e.g. `TS-RND-0309`)"* |
+| Ambiguous / cross-product / user hasn't named the product | *"Where do you want this filed — an Excel workbook (`pmv2` / `ivizit` / `ineighbour-2`) or a TimeTec project Task ID?"* |
+
+> 🛡️ **Never auto-pick the destination.** Per
+> [[feedback_student_mcp_bug_routing_confirm]] the agent never decides
+> the store on its own. Silence from the user = stop and re-ask, not
+> default. If the user says *"file it"* without naming a destination,
+> ask again until they pick one explicitly.
+
+**Stage 2 — Agent prompts for bug details (verbatim).**
+
+Once the user names a destination, the agent collects the bug body with
+this exact prompt (one-shot, in this wording — the wording matters
+because user training has memorised it):
+
+> *"give me steps, expected result, actual result and screenshot link (Optional)."*
+
+The user replies with the four fields. Screenshot link is genuinely
+optional — if the user has nothing to attach, the agent proceeds without
+it. The agent does **NOT** ask supplementary questions at this point
+(no severity prompt, no category prompt, no Task ID re-prompt) — those
+either come from the destination already named (Task ID for TimeTec)
+or are picked by the agent from the bug template using the Steps /
+Expected / Actual it just received.
+
+**Stage 3 — Agent surfaces the final "log this bug" prompt for the user
+to issue.**
+
+Once the agent has steps + expected + actual (+ optional screenshot
+link), it does NOT call `sheet_append_row` / `create_bug` itself. It
+**hands the user a ready-to-paste prompt** containing all the context
+they just gave. The user issues that prompt as a new turn, and **that's**
+when the filing tool actually fires.
+
+Two prompt templates, picked by destination from Stage 1:
+
+| Stage 1 destination | Stage 3 prompt the agent hands back |
+|---|---|
+| Excel (`pmv2` / `ivizit` / `ineighbour-2`) | **"Please log this bug to `<Excel name>`, along with their link."** |
+| TimeTec project Task ID (`TS-RND-NNNN`) | **"Please log this bug to `<Task ID>` in timetec project"** |
+
+`<Excel name>` is the workbook key the user picked in Stage 1 (`pmv2` /
+`ivizit` / `ineighbour-2`) — agent fills it in verbatim. `<Task ID>` is
+the Task ID the user named in Stage 1. The agent presents the templated
+prompt with the values already substituted, so the user can copy-paste
+or re-issue it as a single line.
+
+**Why the two-stage handoff:**
+
+- **Audit trail.** The Stage 3 prompt is a single-line record of what
+  the user authorised. It shows up in chat history and can be re-issued
+  later to file similar bugs without re-walking discovery.
+- **User-owned write.** The MCP's `sheet_append_row` / `create_bug`
+  fires from the Stage 3 prompt, not from inside the discovery turn.
+  This means the user's *"yes, file it"* and the actual write are the
+  same turn — no risk of the agent filing then asking *"was that OK?"*.
+- **Detail reuse.** If the agent's discovery already gathered Steps /
+  Expected / Actual / attachments (Path A from the *Attaching photos*
+  section below), those carry into the Stage 3 prompt verbatim — the
+  user just confirms and issues. If only some details exist, the Stage
+  2 prompt fills the gaps before Stage 3.
+
+**Worked example — Excel route:**
+
+```
+Agent (discovery):    "I found this anomaly on PMv2 → Visitor Settings:
+                       the Custom Hours per-day checkbox silently reverts
+                       on Save."
+
+Agent (Stage 1):      "Which Excel should I log this to — pmv2, ivizit,
+                       or ineighbour-2?"
+
+User:                 "pmv2"
+
+Agent (Stage 2):      "give me steps, expected result, actual result and
+                       screenshot link (Optional)."
+
+User:                 "Steps: 1. Open Purpose Settings General tab.
+                              2. Toggle Use Custom Hours ON.
+                              3. Uncheck Tuesday.
+                              4. Click Save.
+                       Expected: Tuesday stays unchecked.
+                       Actual: Tuesday silently re-checks itself.
+                       Link: <SharePoint URL>"
+
+Agent (Stage 3):      "Please log this bug to `pmv2`, along with their link."
+                      (User can issue this as their next prompt to trigger
+                       the actual sheet_append_row write.)
+```
+
+**Worked example — TimeTec project route:**
+
+```
+Agent (discovery):    "I found this anomaly on Maintenance → Work Order
+                       App: required-field indicator missing."
+
+Agent (Stage 1):      "Which Task ID in TimeTec project should I file
+                       this under?"
+
+User:                 "TS-RND-0343"
+
+Agent (Stage 2):      "give me steps, expected result, actual result and
+                       screenshot link (Optional)."
+
+User:                 "Steps: 1. Open Maintenance App.
+                              2. Tap + → Work Order.
+                              3. Observe form.
+                       Expected: Required fields show a red asterisk.
+                       Actual: No indicator on required fields.
+                       Link: <SharePoint URL>"
+
+Agent (Stage 3):      "Please log this bug to `TS-RND-0343` in timetec project"
+                      (User issues this to trigger create_bug.)
+```
+
+> 🪞 **Stage 3 prompt is the canonical filing trigger.** When you see
+> *"Please log this bug to `<X>`"* in chat history later, that's the
+> single line that caused the filing. Search for that phrase to audit
+> which bugs were filed when. The MCP's bug-creation tools fire on this
+> phrase — so accidentally typing the Stage 3 prompt with wrong
+> substitution values will file the bug there, not at the intended
+> destination. **Sanity-check the substitutions before issuing.**
+
+> 🚧 **Remaining placeholder:** the full template — Severity, Category,
+> Sub Module, Bug Version, Testing Done By, Dev Incharge — is still
+> gathered by the agent from the Stage 2 input + the Excel/TimeTec
+> sub-sections below. This top-level flow only nails the Stage 1
+> destination question, the Stage 2 detail prompt, and the Stage 3
+> handoff prompt. Field-specific details live in the per-store sections.
 
 ### Excel-side logging — what's committed so far
 
@@ -1608,7 +2028,7 @@ of `sheet_read` + `sheet_update_row`.
 
 **Example prompt:**
 
-> Verify bug **BG-1234** on Maintenance.
+> Verify bug **BG-1234**.
 
 **Walkthrough — step by step:**
 
@@ -1857,43 +2277,228 @@ permalink stack to share in Slack / handover docs.
 
 ### 🚨 Hands off the column headers (RnD + workbook owner read this)
 
-> **DO NOT rename any column header in `PMV2- Test Result.xlsx`.** Not on
-> `Bug list`, not on any `v<release>.x` release tab. The MCP + the
-> `BugSheetOp` Office Script key on column names **exactly** —
-> case-sensitive, whitespace-sensitive, no aliases.
->
-> Names the script depends on today (non-exhaustive):
->
-> - **`Bug list` tab**: `No`, `Status`, `Modules`, `Changes Summary`,
->   `Date Closed by QC`, `Remark`, `Testing Done By`, `Developer In Charge`,
->   `QC In Charge`, and the standard bug-template columns.
-> - **Release tabs (`v<version>.x`)**: `#`, `Status`, `Project`, `Modules`,
->   `Changes Summary`, `Changes Details`, `Ready to Test In (SIT)`,
->   `Planned Release Date (Live)`, `Remark`, `Developer In Charge`,
->   `QC In Charge`.
->
-> **Silent failures if you rename:**
-> - `sheet_append_row` lands values in wrong cells (or drops them entirely
->   for unknown column names) — no error, just bad data.
-> - `sheet_read` returns wrong columns under the new label — agent verifies
->   against the wrong field.
-> - Auto-stamp (`Date Closed by QC`) and auto-color (`#` red/green on
->   release tabs) silently skip when their target column is missing —
->   verification still appears to succeed.
-> - `sheet_get_release_modules` parser keys on `#`, `Status`, `Modules`,
->   `Changes Summary` — rename any of those and the release-verification
->   flow returns empty or wrong rows.
->
-> **Safe changes:** adding NEW columns at the end of the header row, or
-> reordering existing columns within a row (the script looks up by name,
-> not position). **Unsafe:** renaming, deleting, or splitting existing
-> columns; renaming worksheet tabs in a way that breaks the `v<X.Y.Z>.x`
-> pattern.
->
-> If you genuinely need to rename a column (e.g. typo fix), coordinate
-> with QC so the MCP + script can be updated in the same change — it's
-> a 2-line edit in `server.js` and a 1-line edit in `BugSheetOp.ts`,
-> but it has to happen at the same time as the workbook change.
+> **DO NOT rename any column header in any workbook the MCP writes to.**
+> The MCP + the `BugSheetOp` Office Script key on column names
+> **exactly** — case-sensitive, whitespace-sensitive, no aliases. A
+> single letter casing change (e.g. `Sub Module` vs `Sub module`)
+> rejects writes with `Unknown column: <name>`.
+
+#### Verified column names per workbook (as of 2026-05-26)
+
+These are the **actual** header rows in the live workbooks, verified by
+reading row 1 from each via `sheet_read`. Do not infer from documentation
+elsewhere — these are ground truth.
+
+**Shared between PMv2 + iVizit + iNeighbour-2 (Bug list tab):**
+- `No`, `Date Reported`, `Module`, **`Sub module`** (lowercase `m`!),
+  `Title`, `Description`, `Steps`, `Actual Result`, `Expected Result`,
+  `Screenshot`, **`Bug Priority`** (NOT `Priority`), `Remark`, `Status`,
+  `Date Closed by QC`, **`Testing Done By`** (NOT `Test Done By`),
+  `Resolved Date`, **`Dev incharge`** (lowercase `i`, no space — NOT
+  `Developer In Charge`), `Bug Version`, **`Dev Remark`**
+
+**Per-workbook drift** — the **category column has different names**
+between workbooks:
+
+| Workbook | Category column |
+|---|---|
+| PMv2 | `Category` |
+| iVizit | `Bug Category` |
+| iNeighbour-2 | `Bug Category` |
+
+When writing to PMv2, use `Category`. When writing to iVizit or
+iNeighbour-2, use `Bug Category`. There is no canonical name — the agent
+must adapt per workbook. (See *"Known schema drift / future issues"*
+section below for why this matters.)
+
+**Release tabs (`v<version>.x`, PMv2 only):**
+- `#`, `Status`, `Project`, `Modules`, `Changes Summary`,
+  `Changes Details`, `Ready to Test In (SIT)`,
+  `Planned Release Date (Live)`, `Remark`, `Developer In Charge`,
+  `QC In Charge`. (iVizit + iNeighbour-2 don't have release tabs in the
+  same shape today — out of scope.)
+
+#### Silent failures if you rename
+
+- `sheet_append_row` returns `{ success: false, message: "Unknown column: X" }`
+  for any column the workbook doesn't have. Less silent than I originally
+  documented — it actually surfaces the error — but the WRITE still doesn't
+  happen, so it can look like a successful call if you're not checking the
+  response.
+- `sheet_read` returns the workbook's actual columns; if a script consumer
+  expected `Test Done By` and the column is really `Testing Done By`, the
+  consumer's lookup returns undefined silently.
+- Auto-stamp (`Date Closed by QC`) and auto-color (`#` red/green on
+  release tabs) silently skip when their target column is missing —
+  verification still appears to succeed.
+- `sheet_get_release_modules` parser keys on `#`, `Status`, `Modules`,
+  `Changes Summary` — rename any of those and the release-verification
+  flow returns empty or wrong rows.
+
+#### Safe changes
+
+- Adding NEW columns at the end of the header row (`BugSheetOp` ignores
+  unknown-to-it columns on read, doesn't write to them on append).
+- Reordering existing columns within a row (the script looks up by name,
+  not position).
+
+#### Unsafe
+
+- Renaming, deleting, or splitting existing columns.
+- Renaming worksheet tabs in a way that breaks the `Bug list` /
+  `v<X.Y.Z>.x` naming patterns.
+- Adding a new workbook with column names that drift from the existing
+  set without updating the agent's prompt convention (see future-issues
+  section).
+
+If you genuinely need to rename a column (e.g. typo fix), coordinate
+with QC so the MCP + script can be updated in the same change — it's a
+small edit in `server.js` and `BugSheetOp.ts`, but it has to happen at
+the same time as the workbook change.
+
+---
+
+### 🆕 Onboarding a NEW workbook (header-row setup)
+
+Discovered 2026-05-26 during the iVizit smoke test: a freshly-cloned
+workbook + flow + script combo doesn't work until the workbook's `Bug
+list` tab also has a **header row populated in row 1**. BugSheetOp scans
+column A for `No` or `#`; if neither exists, every call returns
+`Header row not found: no row has 'No' or '#' in column A on this tab`.
+
+**Setup checklist for a new workbook** (in addition to the flow + script
+deploy steps in the Multi-workbook setup section):
+
+1. Open the new workbook's `Bug list` tab.
+2. In **row 1**, paste the canonical header set (copy from PMv2's
+   `Bug list` row 1 as the reference, OR use the shared list from the
+   *Verified column names per workbook* section above).
+3. Decide which category column name to use — `Category` (PMv2 style) or
+   `Bug Category` (iVizit / iNeighbour-2 style). Be consistent within
+   the workbook.
+4. Save the workbook.
+5. Try a `sheet_append_row` call — should now succeed.
+
+If you skip this step, the script + flow are reachable but every write
+returns `Header row not found` — which can look like a workbook-side
+permissions issue but is actually a missing header-row issue.
+
+---
+
+### 🎯 Enum-selector columns — agent picks from a fixed list, not free text
+
+Three columns across all 3 Excel workbooks behave like **dropdown selectors**, not free-text fields: `Bug Priority`, `Category` / `Bug Category`, and `Status`. In Excel they're literally dropdowns (the cell has Data Validation with a fixed list); in tester usage, the human is forced to pick from the list.
+
+**The rule for the agent: pick from the canonical enum *every time you write* one of these columns.** Same discipline as a human picking from a dropdown — don't paraphrase, don't substitute synonyms, don't invent new categories on the fly. The agent's job is **translating the user's natural-language intent into the exact enum value**, not coining new ones.
+
+#### The three enums the agent MUST use verbatim
+
+| Column | Pick exactly one of | Agent's mapping rule |
+|---|---|---|
+| `Bug Priority` (all 3 workbooks) | **`High`** / **`Medium`** / **`Low`** | User says *"critical / showstopper / blocks the user"* → agent picks `High` (Excel has no `Critical` — see asymmetry below). *"workaround exists / affects subset"* → `Medium`. *"cosmetic / nit / polish"* → `Low`. |
+| `Category` (PMv2) / `Bug Category` (iVizit + iNeighbour-2) | **`UI/UX Issue`** / **`Functional Issue`** / **`Programming/System Issue (Backend/Technical)`** / **`Business/Requirement Gap`** | *"looks broken / layout / styling / a11y / responsive"* → `UI/UX Issue`. *"feature doesn't work as specified / validation / form behaviour"* → `Functional Issue`. *"console error / 500 / race condition / backend"* → `Programming/System Issue (Backend/Technical)` (include the suffix verbatim). *"spec gap / requirement unclear / not yet defined"* → `Business/Requirement Gap`. |
+| `Status` | **`New`** / **`Resolved`** / **`Closed`** / **`Reopen`** / **`Reviewed`** | New rows = `New`. Dev marks fix done = `Resolved` (RND-side). QC verified fix = `Closed`. Fix didn't hold = `Reopen`. PMv2-specific QC-review state = `Reviewed`. |
+
+These are the **only acceptable values** for those columns. Agent must use them character-for-character (matching is case-insensitive at the validation layer, but canonical casing is what's shown above and what gets stored).
+
+#### Critical / non-Critical asymmetry (Excel vs TimeTec project)
+
+The Bug Priority enum **deliberately differs** from the TimeTec project severity enum:
+
+| Where you're writing | Tool | Allowed priorities/severities |
+|---|---|---|
+| **Excel workbooks** | `sheet_append_row` / `sheet_update_row` | `High` / `Medium` / `Low` (3-tier) |
+| **TimeTec project** | `create_bug` | `Critical` / `High` / `Medium` / `Low` (4-tier) |
+
+Convention: incident-grade `Critical` bugs go to TimeTec project (with its triage workflow); Excel is the regular QC backlog where `High` is the top of the scale. **If the user describes a Critical-level bug and the agent is about to write to Excel, the agent should pause** — Critical isn't on Excel's selector. Either pick `High` (downgrade the priority for Excel) OR route to `create_bug` instead (preserves Critical via TimeTec project). Don't try to write `"Critical"` to Excel — the MCP rejects it.
+
+#### Status enum ≠ TimeTec project's status enum
+
+Don't confuse the two — they're separate lifecycle models for separate systems:
+
+| System | Status values |
+|---|---|
+| **Excel** (`Status` column) | `New` / `Resolved` / `Closed` / `Reopen` / `Reviewed` |
+| **TimeTec project** (`update_bug` tool) | `New` / `Reopen` / `QC - In Progress` / `RND - In Progress` / `Ready For Testing` / `Ready For Live` / `Live` / `Closed` / `Rejected` |
+
+Excel's `Reviewed` ≠ TimeTec's `Rejected`. They mean different things, in different systems, with different consumers. Agent must know which system it's writing to and pick from that system's enum.
+
+#### Server-side safety net (`EXCEL_ENUMS` in server.js)
+
+The above is the **agent-facing rule**. As a safety net (in case the agent slips), `sheet_update_row` and `sheet_append_row` validate every write against `EXCEL_ENUMS` before calling Power Automate. Unknown values return:
+
+```json
+{
+  "error": "invalid_enum_value",
+  "column": "Bug Priority",
+  "value": "Critical",
+  "allowed": ["High", "Medium", "Low"],
+  "message": "'Critical' is not a valid 'Bug Priority' value. Allowed: High, Medium, Low."
+}
+```
+
+Matching is **case-insensitive** and values are **normalized to canonical casing** on write — so `"reopen"` is stored as `"Reopen"`. But this is forgiveness, not license: the agent's actual job is still to pick the right canonical value first try, not lean on the validator to fix sloppy input.
+
+**The validator catches mistakes, doesn't license guesses.** If the validator ever rejects, that's a sign the agent picked the wrong enum (or the user described something that doesn't fit any existing category — in which case stop and ask).
+
+#### Why the dropdown-bypass matters (the discovery story)
+
+Without the validator, the workflow has a silent-corruption hazard: **Office Scripts bypass Excel's Data Validation entirely**. Any string written programmatically lands in the dropdown cell with no rejection, just a red warning border in Excel that nobody sees if they're not opening the workbook by hand. Verified 2026-05-26 by writing `Bug Priority: "BANANA_INVALID"` to a PMv2 row — `success: true`, cell now shows the garbage value. The validator I added is the only thing standing between agent typos and silently broken downstream filters / pivots / reports.
+
+#### When to update `EXCEL_ENUMS`
+
+If a workbook adds a new dropdown option (e.g. a 5th category like `Documentation Gap`) — update `EXCEL_ENUMS` in `server.js` to include it. Until then the validator rejects writes of that value even if Excel accepts them in the UI. The enum in code is the **agent's source of truth** for what to pick from.
+
+---
+
+### 🎨 Template-row formatting on append (font colors, conditional formatting, dropdowns)
+
+> **Discovered 2026-05-26 (post-smoke-test):** writing the correct enum value to a dropdown-constrained cell gets the value into the cell, but **does NOT inherit the cell's visual formatting** — font color, conditional formatting fill, the dropdown decoration itself. Human-entered rows have green `Programming/System Issue (Backend/Technical)` text (and similar color-coding per Bug Priority value); script-appended rows showed up plain text, no formatting.
+
+**Root cause:** `setValues()` writes raw values without applying the per-cell formatting that human input gets through conditional formatting + data validation styling.
+
+**Fix:** `BugSheetOp.ts`'s `append` action now **copies formatting from a template row** (the first existing data row, row immediately below the header) into the new row BEFORE setting values. The new row inherits:
+- Conditional formatting fills (per-value cell colors)
+- Font colors (per-category text colors)
+- Data validation (the dropdown decoration on Bug Priority / Category / Status cells)
+- Number formats, borders, anything else the template row has
+
+This mimics how Excel's structured-table feature auto-applies formatting when you Tab to add a new row.
+
+**How it works:**
+
+```typescript
+if (firstDataRow < data.length && (startRow + firstDataRow) !== newRowIndex) {
+  const templateRange = sheet.getRangeByIndexes(startRow + firstDataRow, startCol, 1, headers.length);
+  const targetRange = sheet.getRangeByIndexes(newRowIndex, startCol, 1, headers.length);
+  targetRange.copyFrom(templateRange, ExcelScript.RangeCopyType.formats);
+}
+```
+
+`copyFrom` with `RangeCopyType.formats` copies only formatting (no values). Runs BEFORE `setValues()` so the values overwrite the template values but inherit its styling.
+
+**Skipped when:**
+- The workbook has zero data rows (no template to copy from — first row is the very first append)
+- The target row IS the template row (degenerate case after row insert)
+
+**Re-deploy required:** this is a `BugSheetOp.ts` change. Re-paste the updated script into each of the 3 workbooks' script panels for the new behavior to take effect.
+
+**Limitations:**
+- `update` action does NOT re-apply formatting (only append does). If existing rows lost their formatting historically, updating them won't restore it — that's a Pass-2 enhancement if needed.
+- The template row is fixed as the first data row. If that specific row has aberrant formatting (someone manually messed with it), every new row inherits the bad formatting. Workaround: fix the template row's formatting in Excel by hand.
+- This is workbook-side formatting (CF + DV rules live in the workbook). If the workbook owner changes those rules, new appends inherit the new rules automatically — no script change needed. ✅
+
+---
+
+### Known schema drift / future issues
+
+Things to watch as more workbooks are added or conventions evolve:
+
+1. **Category column name drift.** PMv2 uses `Category`; iVizit + iNeighbour-2 use `Bug Category`. If a 4th workbook arrives with yet another name (e.g. `Bug Type`), `EXCEL_ENUMS` needs the new key added — currently it only knows the two existing variants. The validation will silently let unknown values through for unknown column names.
+2. **Per-workbook enum drift.** If iVizit decides to add a 5th category that PMv2 doesn't have (e.g. `Hardware Issue`), the current single global `EXCEL_ENUMS` per column will reject it everywhere — including iVizit where it's legitimate. Path forward: per-workbook enum overrides keyed by workbook in the map.
+3. **Status casing drift.** The validation normalizes to title case (`Reopen`). Existing rows written before this validation may have other casings — they won't be retroactively normalized.
+4. **Header row missing on new workbooks.** Documented above in *Onboarding a NEW workbook* — new workbooks need the header row populated before any write works.
+5. **Office Script self-discovery of dropdown values.** Long-term fix to enum drift would be enhancing `BugSheetOp` to read each cell's actual Data Validation rule and validate against it — no hardcoded enum needed in `server.js`. Higher one-time cost (script edit + redeploy per workbook) but eliminates the per-workbook-drift maintenance burden.
 
 ---
 

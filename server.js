@@ -637,7 +637,7 @@ server.tool(
 // ── Tool: create_bug ────────────────────────────────────────────────────────
 server.tool(
   "create_bug",
-  "Create a new bug. Title is auto-built by joining: product - solution - platform - bug_summary (e.g. 'PM V1 - TimeTec Maintenance - App - Lacking indicator...'). Description is auto-built from steps_to_reproduce, expected_result, and actual_result. Accepts NAMES or numeric IDs for product/module/category/assignees. Pass related_task as 'TS-RND-0309' or a numeric id to link a task.\n\n**BUG ROUTING RULE (must read before calling):** Before invoking this tool, you MUST ask the user where to file the bug. Possible answers:\n  • `tracker_only` — file only to dt.timeteccloud.com (the TimeTec Project dashboard).\n  • `tracker_and_excel` — file to dt.timeteccloud.com AND append a row to PMv2- Test Result.xlsx.\n  • `excel_only` — DO NOT use create_bug; use `sheet_append_row` directly instead.\n  • `neither` — DO NOT call any filing tool.\n\nThe required `destination` parameter MUST match the user's confirmed choice. This tool will refuse to run without it.\n\n**TASK ID RULE (must read before calling):** Before invoking this tool you MUST also ask the user whether this bug links to a Task ID (e.g. TS-RND-0309). Acceptable answers:\n  • `with_task` — yes, link it; the user provided a Task ID → pass it via `related_task`.\n  • `no_task`   — no Task ID for this bug; do NOT pass `related_task`.\n\nThe required `task_decision` parameter MUST match the user's confirmed choice. The tool refuses to run if the contract is broken (e.g. `task_decision: 'with_task'` but `related_task` is missing, or `task_decision: 'no_task'` but `related_task` is set). Silently omitting the question is forbidden — every bug filing must record an explicit task-link decision.\n\n**OWNERSHIP RULE (must read before calling):** Every bug needs SOMEONE to route to — either a Task (which carries assignees) or an explicit assignee. The tool rejects calls where BOTH `related_task` and `assignees` are missing/empty. If the user gives a Task ID → set task_decision='with_task' and pass related_task; ownership is inherited from the task. If the user gives a developer/team name → set task_decision='no_task' and pass it via `assignees` (name/email/id). If the user provides neither, do NOT call this tool — re-prompt them for one of the two and only file when they answer.",
+  "Create a new bug. Title is auto-built by joining: product - solution - platform - bug_summary (e.g. 'PM V1 - TimeTec Maintenance - App - Lacking indicator...'). Description is auto-built from steps_to_reproduce, expected_result, and actual_result. Accepts NAMES or numeric IDs for product/module/category/assignees. Pass related_task as 'TS-RND-0309' or a numeric id to link a task.\n\n**BUG ROUTING RULE (must read before calling):** Before invoking this tool, you MUST ask the user where to file the bug. Possible answers:\n  • `tracker_only` — file only to dt.timeteccloud.com (the TimeTec Project dashboard).\n  • `tracker_and_excel` — file to dt.timeteccloud.com AND append a row to PMv2- Test Result.xlsx.\n  • `excel_only` — DO NOT use create_bug; use `sheet_append_row` directly instead.\n  • `neither` — DO NOT call any filing tool.\n\nThe required `destination` parameter MUST match the user's confirmed choice. This tool will refuse to run without it.\n\n**TASK ID RULE (must read before calling):** Before invoking this tool you MUST also ask the user whether this bug links to a Task ID (e.g. TS-RND-0309). Acceptable answers:\n  • `with_task` — yes, link it; the user provided a Task ID → pass it via `related_task`.\n  • `no_task`   — no Task ID for this bug; do NOT pass `related_task`.\n\nThe required `task_decision` parameter MUST match the user's confirmed choice. The tool refuses to run if the contract is broken (e.g. `task_decision: 'with_task'` but `related_task` is missing, or `task_decision: 'no_task'` but `related_task` is set). Silently omitting the question is forbidden — every bug filing must record an explicit task-link decision.\n\n**OWNERSHIP RULE (must read before calling):** Every bug needs SOMEONE to route to — either a Task (which carries assignees) or an explicit assignee. The tool rejects calls where BOTH `related_task` and `assignees` are missing/empty. If the user gives a Task ID → set task_decision='with_task' and pass related_task; ownership is inherited from the task. If the user gives a developer/team name → set task_decision='no_task' and pass it via `assignees` (name/email/id). If the user provides neither, do NOT call this tool — re-prompt them for one of the two and only file when they answer.\n\n**BUG VERSION RULE (must read before calling with destination='tracker_and_excel'):** When the Excel mirror is in play, you MUST ask the user which release the bug was found on and pass it via `bug_version` (placeholder example for all workbooks: 'v26.5.1.1'). Accepted shapes: `v26.5.1.1`, `v26.5.1.x`, `2.0.0` (no v-prefix), `1.0.3 (1)`, `1.0.0(3)`. Do NOT guess from the latest release tab — the tester knows which build they were on. Echo the user's value verbatim — do not normalise spacing/parens/case. The tool rejects `destination='tracker_and_excel'` calls with empty/missing/free-text bug_version. Ignored when destination='tracker_only'.",
   {
     product: z.union([z.string(), z.number()]).describe("Product name (e.g. 'TimeTec HR - Version 2', 'PM V1') or numeric ID"),
     solution: z.string().optional().describe("Solution name for the title (e.g. 'TimeTec Maintenance', 'TimeTec VMS', 'iNeighbour'). Omit if not applicable."),
@@ -663,6 +663,7 @@ server.tool(
     solution_id: z.number().optional().describe("Solution numeric ID (advanced — name resolution not yet supported)"),
     sub_module: z.string().optional().describe("Free-text sub-module name written ONLY to the Excel `Sub module` column (does not affect the bug tracker record)."),
     dev_incharge: z.string().optional().describe("Free-text developer name written ONLY to the Excel `Dev incharge` column (does not affect the bug tracker record)."),
+    bug_version: z.string().optional().describe("Bug Version (e.g. 'v26.5.1.1'). REQUIRED when destination='tracker_and_excel' — written to the Excel `Bug Version` column. Ask the user which release this bug was found on; do not guess from the latest release tab. Same placeholder example applies for all workbooks (pmv2, ivizit, ineighbour-2). Ignored when destination='tracker_only'."),
     destination: z.enum(["tracker_only", "tracker_and_excel"]).describe("REQUIRED. Where to file the bug — MUST be confirmed with the user FIRST per the bug-routing rule. 'tracker_only' = dt.timeteccloud.com only. 'tracker_and_excel' = dashboard plus an Excel row. If the user wants Excel-only, call sheet_append_row instead. If neither, do not call this tool at all."),
     task_decision: z.enum(["with_task", "no_task"]).describe("REQUIRED. Whether this bug links to a Task ID — MUST be confirmed with the user FIRST per the TASK ID RULE. 'with_task' = user supplied a Task ID (also pass `related_task`). 'no_task' = user explicitly said no Task ID (DO NOT pass `related_task`). Silently omitting the question is forbidden; the tool will refuse to run if the contract is broken."),
   },
@@ -691,6 +692,23 @@ server.tool(
       return textResult({
         error: "Bug must have an owner: pass either a related_task (Task ID like 'TS-RND-0309') OR at least one assignee (name/email/id). The current call has neither — the bug would be filed with no one to route it to. Ask the user for one of: (a) the Task ID this bug belongs to, or (b) the developer/team to assign it to. If they don't know either, do NOT file the bug — defer until they do.",
       });
+    }
+    // Enforce BUG VERSION RULE — when filing to Excel, the user must specify
+    // which release the bug was found on. Bug Version conventions vary across
+    // workbooks (PMv2 strict semver, iVizit/iNeighbour mixed), so the agent
+    // MUST ask rather than guess from the latest release tab.
+    if (params.destination === "tracker_and_excel") {
+      const bv = (params.bug_version || "").trim();
+      if (!bv) {
+        return textResult({
+          error: "destination='tracker_and_excel' requires a bug_version. Ask the user which release this bug was found on (placeholder example: 'v26.5.1.1' — applies to all workbooks). Do NOT guess from the latest release tab — the user knows which build they tested. If unknown, defer filing until they answer.",
+        });
+      }
+      if (!isValidBugVersion(bv)) {
+        return textResult({
+          error: `bug_version '${bv}' doesn't look like a version string. Accepted shapes: 'v26.5.1.1', 'v26.5.1.x', '2.0.0', '1.0.3 (1)', '1.0.0(3)'. Free-text like 'UAT smoke test' or 'fixed in build' is rejected.`,
+        });
+      }
     }
     let lookups;
     try {
@@ -849,6 +867,7 @@ server.tool(
           "Screenshot": screenshot,
           "Bug Priority": priorityMap[params.severity] || params.severity,
           "Dev incharge": params.dev_incharge || "",
+          "Bug Version": params.bug_version.trim(),
         };
 
         const sheetRes = await callSheetFlow("append", 0, sheetValues);
@@ -1131,6 +1150,130 @@ server.tool(
   }
 );
 
+// ── Tool: get_release_note_by_task ─────────────────────────────────────────
+// Given a display task ID (TS-RND-XXXX), fetch the task's release-note details
+// from the TimeTec project and emit a discover-vs-verify-manually prompt.
+//
+// Mirrors sheet_get_release_modules' "prompt_to_user" behaviour but sourced
+// from the TimeTec project tracker instead of the Excel release tab — so the
+// agent can verify a single task without needing the release-tab context.
+//
+// The release note IS the task's description. Title + module/sub-module are
+// included so the agent has enough context to phrase the discover question.
+server.tool(
+  "get_release_note_by_task",
+  "Fetch a TimeTec project task by its display ID (TS-RND-XXXX) and return its release-note details — title, description (the release note itself), module, sub-module — plus a `prompt_to_user` the agent MUST surface verbatim asking the user whether to (a) DISCOVER the module via student-mcp first OR (b) verify the release changes MANUALLY without prior knowledge.\n\nUse this when the user asks to verify a specific TS-RND-* task: it bypasses the version-keyed `sheet_get_release_modules` flow (which returns ALL rows in a release version) and zeroes in on one task.\n\n**Input is the DISPLAY ID** (e.g. 'TS-RND-0309'), not the numeric task id. The tool searches the project for the matching task_id, then fetches its full edit-view data.\n\n**Linked bugs.** Tasks often have pre-existing bugs attached (severity + status). The structured response ALWAYS includes the full `linked_bugs` array so the agent has access. The verbatim `prompt_to_user` only surfaces a linked-bugs summary (count + status breakdown) when `include_linked_bugs=true` is passed — default is off to keep the discover question focused. Set it true when the user explicitly asks for the linked-bug context, or when verification scope clearly extends beyond the task's stated change.\n\n**Discover-prompt enforcement is soft** — the prompt is part of the response text, but the server doesn't gate downstream tool calls. The agent must surface the prompt to the user and wait for adjudication before any UI verification work, same convention as `sheet_get_release_modules`.",
+  {
+    task_id: z.string().describe("Display task ID, e.g. 'TS-RND-0309'. Must match /^TS-[A-Z]+-\\d+$/i. Numeric IDs are not accepted here — use `get_task` for those."),
+    include_linked_bugs: z.boolean().optional().default(false).describe("Default false. When true, the verbatim `prompt_to_user` includes a linked-bugs summary (total count + status breakdown like 'Ready For Live: 12, Reopen: 2, ...'). The structured response always includes the full `linked_bugs` array regardless — this flag only controls whether the prompt the agent reads aloud mentions them. Enable when the user explicitly asks for linked-bug context."),
+  },
+  async ({ task_id, include_linked_bugs }) => {
+    // ── Validate display-ID shape ───────────────────────────────────────
+    const displayIdPattern = /^TS-[A-Z]+-\d+$/i;
+    const normalizedId = String(task_id || "").trim().toUpperCase();
+    if (!displayIdPattern.test(normalizedId)) {
+      return textResult({
+        error: "invalid_task_id",
+        message: `task_id must match /^TS-[A-Z]+-\\d+$/i (e.g. 'TS-RND-0309', 'TS-QC-0200'). Got: '${task_id}'.`,
+      });
+    }
+
+    // ── Resolve display ID → numeric id via search ──────────────────────
+    // The /tasks/{numeric}/edit endpoint needs the numeric id; search by the
+    // display ID and find an exact case-insensitive match.
+    let searchData;
+    try {
+      searchData = await inertiaGet(`/tasks?search=${encodeURIComponent(normalizedId)}&view=all`);
+    } catch (e) {
+      return textResult({
+        error: "search_failed",
+        message: `Could not search tasks for '${normalizedId}': ${String((e && e.message) || e)}`,
+      });
+    }
+    const candidates = searchData.props?.tasks?.data || [];
+    const match = candidates.find((t) => String(t.task_id || "").toUpperCase() === normalizedId);
+    if (!match) {
+      return textResult({
+        error: "task_not_found",
+        message: `No task with display ID '${normalizedId}' on this project. Searched ${candidates.length} candidate(s). Verify the task_id exists and the configured TIMETEC_BASE_URL points at the right environment.`,
+      });
+    }
+
+    // ── Fetch full task via edit endpoint ───────────────────────────────
+    let editData;
+    try {
+      editData = await inertiaGet(`/tasks/${match.id}/edit`);
+    } catch (e) {
+      return textResult({
+        error: "fetch_failed",
+        message: `Found task '${normalizedId}' (numeric id ${match.id}) via search but couldn't fetch full details: ${String((e && e.message) || e)}`,
+      });
+    }
+    const task = editData.props?.task;
+    if (!task) {
+      return textResult({
+        error: "task_payload_missing",
+        message: `Edit endpoint returned no task payload for '${normalizedId}' (numeric id ${match.id}).`,
+      });
+    }
+
+    const formatted = formatTask(task);
+    const moduleLabel = formatted.module || "(no module set on this task)";
+    const subModuleLabel = formatted.sub_module ? ` / ${formatted.sub_module}` : "";
+
+    // ── Optional: linked-bugs summary line for the prompt ───────────────
+    // Always available in structured response; surfaced in the verbatim
+    // prompt only when include_linked_bugs=true (opt-in to keep the
+    // discover question focused by default).
+    let linkedBugsLine = null;
+    if (include_linked_bugs && Array.isArray(formatted.bugs) && formatted.bugs.length > 0) {
+      const byStatus = {};
+      for (const b of formatted.bugs) {
+        const s = String(b.status || "(no status)").trim();
+        byStatus[s] = (byStatus[s] || 0) + 1;
+      }
+      const breakdown = Object.entries(byStatus)
+        .sort((a, b) => b[1] - a[1])
+        .map(([s, n]) => `${s}: ${n}`)
+        .join(", ");
+      linkedBugsLine = `Linked bugs: ${formatted.bugs.length} total (${breakdown})`;
+    }
+
+    // ── Build prompt_to_user ────────────────────────────────────────────
+    // Same shape/enforcement language as sheet_get_release_modules so the
+    // agent applies the same discover-or-verify-manually adjudication.
+    const promptLines = [
+      `📋 RELEASE VERIFICATION — surface to the user VERBATIM before any UI walk:`,
+      ``,
+      `Task: ${formatted.task_id}`,
+      `Title: ${formatted.title}`,
+      `Module: ${moduleLabel}${subModuleLabel}`,
+      `Product: ${formatted.product || "(unspecified)"}`,
+    ];
+    if (linkedBugsLine) promptLines.push(linkedBugsLine);
+    promptLines.push(
+      ``,
+      `Release note (task description):`,
+      formatted.description ? formatted.description.slice(0, 2000) : "(no description on this task)",
+      ``,
+      `ASK THE USER:`,
+      `  "Module '${moduleLabel}' — do you want me to (a) DISCOVER this module first via student-mcp before verifying the release changes, or (b) verify the release changes MANUALLY without prior knowledge? Pick a/b."`,
+      ``,
+      `Do NOT begin verifying any release changes until the user has adjudicated. Skipping this step risks verifying against guessed behaviour instead of grounded knowledge.`,
+    );
+    const prompt_to_user = promptLines.join("\n");
+
+    return textResult({
+      success: true,
+      task: formatted,
+      release_note: formatted.description || "",
+      linked_bugs: formatted.bugs || [],
+      linked_bugs_included_in_prompt: !!linkedBugsLine,
+      prompt_to_user,
+    });
+  }
+);
+
 // ── Tool: create_task ──────────────────────────────────────────────────────
 server.tool(
   "create_task",
@@ -1367,6 +1510,17 @@ function mediaPredicate(mediaMode) {
   if (mediaMode === "photo") return isImagePath;
   if (mediaMode === "video") return isVideoPath;
   return () => true;
+}
+
+// Permissive version-string validator. Accepts the real Bug Version
+// conventions observed across the PMv2/iVizit/iNeighbour-2 workbooks:
+//   v26.5.1.1, v26.5.1.x, v2.0.0.3, 2.0.0, 1.0.3 (1), 1.0.0(3)
+// Rejects free-text like "UAT 2026.05.26 (smoke test)", "qwerty", or
+// "fixed in build" so typo / placeholder strings can't sneak in.
+const BUG_VERSION_PATTERN = /^v?\d+(?:\.\d+){1,}(?:\.x)?(?:\s*\(\d+\))?$/i;
+function isValidBugVersion(s) {
+  if (typeof s !== "string") return false;
+  return BUG_VERSION_PATTERN.test(s.trim());
 }
 
 function loadTracker() {
@@ -2191,11 +2345,101 @@ server.tool(
 // `BugSheetOp` Office Script, which performs the read / update / append on the
 // spreadsheet (QCTest SharePoint site) and returns a JSON result.
 //
-// Configure the flow URL via the SHEET_FLOW_URL env var (a default is baked in).
+// Configure the flow URL(s) via env vars (defaults are baked in).
+//
+// Two ways:
+//   1. SHEET_FLOW_URL              — single workbook (PMv2 default). Used when
+//                                    sheet_* calls don't specify a `workbook` arg.
+//   2. SHEET_FLOW_URLS (JSON map)  — multi-workbook routing. Per-call `workbook`
+//                                    arg selects which flow URL to hit.
+//                                    Example value:
+//                                    {"pmv2":"https://...flow1...",
+//                                     "ivizit":"https://...flow2...",
+//                                     "hrv2":"https://...flow3..."}
+//                                    Keys are case-insensitive at lookup time.
+//
+// If both are set, SHEET_FLOW_URLS provides the map and SHEET_FLOW_URL acts as
+// the fallback when a call doesn't specify `workbook` (or specifies a key the
+// map doesn't have — surfaces as a routing error rather than silent default).
 // ════════════════════════════════════════════════════════════════════════════
 
 const SHEET_FLOW_URL = process.env.SHEET_FLOW_URL ||
   "https://defaultdb45ae3039214816bd8498cf14d5a1.7b.environment.api.powerplatform.com/powerautomate/automations/direct/workflows/be69b98b1a5d4adea6369a34c61464f8/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=GPYOJQ8WCUa1MtF4tfJpcPZ7Vq4kjKyFkJj0erBPcJo";
+
+// Parse SHEET_FLOW_URLS as a JSON map of { workbookKey: flowUrl }. Empty/missing
+// or malformed = empty map (single-workbook mode via SHEET_FLOW_URL only).
+const SHEET_FLOW_URLS = (() => {
+  const raw = process.env.SHEET_FLOW_URLS;
+  if (!raw || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      // Normalize keys to lowercase for case-insensitive lookup.
+      const norm = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "string" && v.trim()) {
+          norm[String(k).toLowerCase()] = v;
+        }
+      }
+      return norm;
+    }
+  } catch (e) {
+    // Bad JSON — log to stderr at startup so it's visible without crashing
+    // the server. Single-workbook mode still works.
+    console.error(`[timetec-bugs-mcp] SHEET_FLOW_URLS env var is not valid JSON: ${e.message}. Falling back to single-workbook mode (SHEET_FLOW_URL only).`);
+  }
+  return {};
+})();
+
+// Resolve a workbook key (or null/undefined) to the flow URL to call.
+//
+// Resolution rules:
+// - Single-workbook mode (SHEET_FLOW_URLS empty or missing): workbook arg is
+//   ignored; always uses SHEET_FLOW_URL. Backward-compatible with installs
+//   that never configured multi-workbook routing.
+// - Multi-workbook mode (SHEET_FLOW_URLS has at least one entry):
+//     * Omitting `workbook` returns { error: "workbook_required" } — the agent
+//       MUST name the target before any sheet_* call. Writing to the wrong
+//       workbook is a costly mistake (silent data corruption); we'd rather
+//       force an explicit pick than guess.
+//     * Passing a key that isn't in the map returns { error: "unknown_workbook" }
+//       with the available keys, so the agent can recover by re-prompting.
+//     * Passing a matching key returns the mapped URL.
+//
+// Returns { url, source: "map"|"default", workbook: <key|null> } on success,
+// or { error: "workbook_required"|"unknown_workbook", available: [...], hint } on failure.
+function resolveFlowUrl(workbookKey) {
+  const hasMap = Object.keys(SHEET_FLOW_URLS).length > 0;
+  const omitted = workbookKey == null || String(workbookKey).trim() === "";
+
+  if (omitted) {
+    if (hasMap) {
+      return {
+        error: "workbook_required",
+        workbook: null,
+        available: Object.keys(SHEET_FLOW_URLS),
+        hint: `Multi-workbook mode is active (SHEET_FLOW_URLS configured with ${Object.keys(SHEET_FLOW_URLS).length} workbook(s): ${Object.keys(SHEET_FLOW_URLS).join(", ")}). The 'workbook' argument is REQUIRED — silently defaulting could write to the wrong workbook. ASK the user which workbook they mean before retrying.`,
+      };
+    }
+    return { url: SHEET_FLOW_URL, source: "default", workbook: null };
+  }
+
+  const key = String(workbookKey).trim().toLowerCase();
+  if (SHEET_FLOW_URLS[key]) {
+    return { url: SHEET_FLOW_URLS[key], source: "map", workbook: key };
+  }
+  // Caller asked for a specific workbook that the map doesn't have. Be strict —
+  // do NOT silently fall back to the default (that would write to the wrong
+  // workbook). Surface the error so the agent can re-prompt the user.
+  return {
+    error: "unknown_workbook",
+    workbook: workbookKey,
+    available: Object.keys(SHEET_FLOW_URLS),
+    hint: hasMap
+      ? `Available workbook keys: ${Object.keys(SHEET_FLOW_URLS).join(", ")}. Did you mean one of those?`
+      : `SHEET_FLOW_URLS env var is not set (or empty). Either omit the 'workbook' arg to use SHEET_FLOW_URL, or set SHEET_FLOW_URLS as a JSON map: {\"pmv2\":\"https://...\",\"ivizit\":\"https://...\"}.`,
+  };
+}
 
 // POST { action, rowNo, valuesJson, sheetName, colorsJson } to the Power Automate
 // flow and return the parsed BugSheetOp result as { ok: true, result } — or
@@ -2203,9 +2447,16 @@ const SHEET_FLOW_URL = process.env.SHEET_FLOW_URL ||
 // sheetName defaults to "" (the script falls back to "Bug list").
 // colors is an optional { columnName: hex } map; passed to BugSheetOp's colorsJson
 // param which fills the matching cells with the hex colors.
-async function callSheetFlow(action, rowNo, values, sheetName, colors) {
-  if (!SHEET_FLOW_URL) {
-    return { ok: false, error: "SHEET_FLOW_URL is not configured." };
+async function callSheetFlow(action, rowNo, values, sheetName, colors, workbook) {
+  const resolved = resolveFlowUrl(workbook);
+  if (resolved.error === "workbook_required") {
+    return { ok: false, error: "workbook_required", hint: resolved.hint, available: resolved.available };
+  }
+  if (resolved.error === "unknown_workbook") {
+    return { ok: false, error: `unknown_workbook '${resolved.workbook}': ${resolved.hint}`, workbook: resolved.workbook, available: resolved.available };
+  }
+  if (!resolved.url) {
+    return { ok: false, error: "No flow URL resolved. Set SHEET_FLOW_URL or SHEET_FLOW_URLS in the env block." };
   }
   const body = {
     action,
@@ -2216,7 +2467,7 @@ async function callSheetFlow(action, rowNo, values, sheetName, colors) {
   };
   let res;
   try {
-    res = await fetch(SHEET_FLOW_URL, {
+    res = await fetch(resolved.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -2265,6 +2516,62 @@ async function callSheetFlow(action, rowNo, values, sheetName, colors) {
 // Excel serial-date for today (UTC midnight), matching the format used in the
 // PMV2 Bug list workbook's date columns (e.g. "Date Closed by QC" = 46160).
 // Serial 0 = 1899-12-30 (Excel's epoch, accounting for the 1900 leap-year bug).
+//
+// ── Excel enum validation ────────────────────────────────────────────────
+// Excel's data validation (the dropdown constraint on Bug Priority / Bug
+// Category / Status cells) is BYPASSED by Office Scripts — any string
+// programmatically written lands in the cell with no rejection. To prevent
+// drift, we validate values at the MCP layer before they hit the flow.
+//
+// Case-insensitive matching, canonical-casing normalization on write.
+// Empty strings are skipped (clear-cell intent).
+//
+// NOTE: `Critical` priority is TimeTec-project-only (the create_bug tool's
+// severity enum). Excel workbooks top out at `High`. Keep these two enums
+// separate — don't add Critical to EXCEL_ENUMS.
+const EXCEL_ENUMS = Object.freeze({
+  "Bug Priority": ["High", "Medium", "Low"],
+  "Category": [
+    "UI/UX Issue",
+    "Functional Issue",
+    "Programming/System Issue (Backend/Technical)",
+    "Business/Requirement Gap",
+  ],
+  "Bug Category": [
+    "UI/UX Issue",
+    "Functional Issue",
+    "Programming/System Issue (Backend/Technical)",
+    "Business/Requirement Gap",
+  ],
+  "Status": ["New", "Resolved", "Closed", "Reopen", "Reviewed"],
+});
+
+// Validate enum values in a values object and normalize casing in-place.
+// Returns null on success (and mutates `values` to canonical casing) or
+// { error: "invalid_enum_value", column, value, allowed } on first violation.
+function validateEnums(values) {
+  if (!values || typeof values !== "object") return null;
+  for (const [col, raw] of Object.entries(values)) {
+    if (raw == null || String(raw).trim() === "") continue; // skip clear-intent
+    const allowed = EXCEL_ENUMS[col];
+    if (!allowed) continue; // column not enum-constrained
+    const target = String(raw).trim().toLowerCase();
+    const matched = allowed.find((a) => a.toLowerCase() === target);
+    if (!matched) {
+      return {
+        error: "invalid_enum_value",
+        column: col,
+        value: raw,
+        allowed,
+        hint: `'${raw}' is not a valid '${col}' value. Allowed: ${allowed.join(", ")}. (Case-insensitive matching; canonical casing shown.)`,
+      };
+    }
+    // Normalize to canonical casing
+    values[col] = matched;
+  }
+  return null;
+}
+
 function excelSerialToday() {
   const now = new Date();
   const utcMidnight = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
@@ -2275,7 +2582,7 @@ function excelSerialToday() {
 // ── Tool: sheet_update_row ──────────────────────────────────────────────────
 server.tool(
   "sheet_update_row",
-  "Update cells of an existing row in the PMV2 Bug list spreadsheet. Identify the row by its `No` column value and pass `values` keyed by column header name — only those cells are written. Pass `sheet_name` to target a tab other than `Bug list`. Runs through the Power Automate flow (no Microsoft login needed).\n\n**AUTO-STAMP (Bug list only):** When `values.Status` is set to a closed-equivalent value (case-insensitive match against `Closed`/`CLOSED`/`closed`) AND the caller did NOT supply `Date Closed by QC` in the same payload, the tool auto-pairs `Date Closed by QC = <today's Excel serial>` so the verification date is recorded automatically. Pass an explicit `Date Closed by QC` to override.\n\n**AUTO-COLOR (release tabs only):** On a release tab (any `sheet_name` other than `Bug list`), when `values.Status` is set to `REOPEN` or `CLOSED` (case-insensitive) AND the caller did NOT pass `colors`, the tool auto-injects a fill on the row's `#` cell: `#FF0000` (red) for REOPEN, `#20ff1c` (green) for CLOSED. Pass an explicit `colors` object to override.",
+  "Update cells of an existing row in the PMV2 Bug list spreadsheet. Identify the row by its `No` column value and pass `values` keyed by column header name — only those cells are written. Pass `sheet_name` to target a tab other than `Bug list`. Runs through the Power Automate flow (no Microsoft login needed).\n\n**ENUM-SELECTOR COLUMNS — pick EXACTLY one of the allowed values (these are dropdowns in Excel; the agent is the one choosing from the list):**\n- `Bug Priority` → MUST be one of `High` / `Medium` / `Low`. NO `Critical` — that's TimeTec-project-only. Map user intent: blocking → High, workaround → Medium, cosmetic → Low.\n- `Category` (PMv2) / `Bug Category` (iVizit + iNeighbour-2) → MUST be one of `UI/UX Issue` / `Functional Issue` / `Programming/System Issue (Backend/Technical)` / `Business/Requirement Gap`. The `(Backend/Technical)` suffix is part of the canonical value — include it verbatim.\n- `Status` → MUST be one of `New` / `Resolved` / `Closed` / `Reopen` / `Reviewed`. (Different from TimeTec project's status enum — don't confuse them.)\n\nValidation is server-enforced: passing anything outside the allowed list returns `{ error: 'invalid_enum_value', column, value, allowed }` and the write doesn't happen. Matching is case-insensitive and values are normalized to canonical casing on write — but this is a safety net, not license to guess. The agent's job is to pick the right canonical value first try.\n\n**AUTO-STAMP (Bug list only):** When `values.Status` is set to a closed-equivalent value (case-insensitive match against `Closed`/`CLOSED`/`closed`) AND the caller did NOT supply `Date Closed by QC` in the same payload, the tool auto-pairs `Date Closed by QC = <today's Excel serial>` so the verification date is recorded automatically. Pass an explicit `Date Closed by QC` to override.\n\n**AUTO-COLOR (release tabs only):** On a release tab (any `sheet_name` other than `Bug list`), when `values.Status` is set to `REOPEN` or `CLOSED` (case-insensitive) AND the caller did NOT pass `colors`, the tool auto-injects a fill on the row's `#` cell: `#FF0000` (red) for REOPEN, `#20ff1c` (green) for CLOSED. Pass an explicit `colors` object to override.",
   {
     no: z.number().describe("The target row's `No` column value."),
     values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
@@ -2283,14 +2590,29 @@ server.tool(
     sheet_name: z.string().optional().describe("Worksheet tab name (e.g. '26.5.1.x'). Defaults to 'Bug list' if omitted."),
     colors: z.record(z.string(), z.string()).optional()
       .describe("Optional { columnHeaderName: hexColor } map (e.g. { \"#\": \"#FF0000\" }) — fills the matching cells on the target row with the given fill colors. Pass an empty object {} to suppress the release-tab auto-color."),
+    workbook: z.string().optional().describe("Workbook key (case-insensitive) for multi-workbook routing via SHEET_FLOW_URLS env var. e.g. 'pmv2', 'ivizit', 'hrv2'. Omit to use the default SHEET_FLOW_URL (single-workbook mode). When SHEET_FLOW_URLS is set, the agent should always pass this — passing an unknown key returns an unknown_workbook error rather than silently writing to the wrong workbook."),
   },
-  async ({ no, values, sheet_name, colors }) => {
+  async ({ no, values, sheet_name, colors, workbook }) => {
+    // Validate enum-constrained columns (Bug Priority / Bug Category / Status)
+    // BEFORE the flow call. Office Scripts bypass Excel data validation, so
+    // garbage values would silently land in dropdown-constrained cells.
+    // See validateEnums() + EXCEL_ENUMS for the canonical sets.
+    const enriched = { ...values };
+    const enumErr = validateEnums(enriched);
+    if (enumErr) {
+      return textResult({
+        error: enumErr.error,
+        column: enumErr.column,
+        value: enumErr.value,
+        allowed: enumErr.allowed,
+        message: enumErr.hint,
+      });
+    }
     // Auto-stamp Date Closed by QC when Status is being set to "Closed"
     // on the Bug list master tab. Release tabs (v26.5.1.x etc.) don't
     // have this column, so injecting it there would fail the whole
     // update with "Unknown column: Date Closed by QC" — restrict the
     // auto-stamp to Bug list (the default tab when sheet_name is unset).
-    const enriched = { ...values };
     const statusVal = enriched["Status"];
     const targetTab = (sheet_name == null ? "" : String(sheet_name)).trim().toLowerCase();
     const isBugList = targetTab === "" || targetTab === "bug list";
@@ -2313,8 +2635,13 @@ server.tool(
         effectiveColors = { "#": "#20ff1c" };
       }
     }
-    const r = await callSheetFlow("update", no, enriched, sheet_name, effectiveColors);
-    if (!r.ok) return textResult({ error: "flow_call_failed", message: r.error });
+    const r = await callSheetFlow("update", no, enriched, sheet_name, effectiveColors, workbook);
+    if (!r.ok) {
+      const errCode = r.error === "workbook_required" ? "workbook_required"
+        : r.error.startsWith("unknown_workbook") ? "unknown_workbook"
+        : "flow_call_failed";
+      return textResult({ error: errCode, message: r.hint || r.error, available: r.available });
+    }
     return textResult(r.result);
   }
 );
@@ -2322,17 +2649,59 @@ server.tool(
 // ── Tool: sheet_append_row ──────────────────────────────────────────────────
 server.tool(
   "sheet_append_row",
-  "Add a new row to the PMV2 Bug list spreadsheet. The `No` value is auto-assigned (highest existing + 1). Pass `values` keyed by column header name. By default the row is appended at the bottom; pass `insert_after_no` to insert it directly after an existing row instead. Pass `sheet_name` to target a tab other than `Bug list`. Runs through the Power Automate flow.\n\n**BUG ROUTING REMINDER:** If you are calling this to log a bug surfaced during discovery, you MUST have first asked the user whether to file it to Excel, the tracker, both, or neither. Use this tool only if the answer was 'excel_only' or as part of an 'tracker_and_excel' decision (in which case `create_bug` with destination='tracker_and_excel' would have handled it automatically). For non-bug data (test-run logs, version tracking, etc.) no confirmation needed.",
+  "Add a new row to the PMV2 Bug list spreadsheet. The `No` value is auto-assigned (highest existing + 1). Pass `values` keyed by column header name. By default the row is appended at the bottom; pass `insert_after_no` to insert it directly after an existing row instead. Pass `sheet_name` to target a tab other than `Bug list`. Runs through the Power Automate flow.\n\n**BUG VERSION IS MANDATORY:** Every appended row MUST carry a non-empty `Bug Version`. Pass it either via the top-level `bug_version` argument or as `values['Bug Version']`. ASK THE USER which release the bug was found on — do not guess from the latest release tab. The tool rejects writes with no Bug Version.\n\n**ENUM-SELECTOR COLUMNS — pick EXACTLY one of the allowed values (these are dropdowns in Excel; the agent is the one choosing from the list):**\n- `Bug Priority` → `High` / `Medium` / `Low`. NO `Critical` on Excel — that's TimeTec-project-only via `create_bug`. If the user calls a bug Critical and you're writing to Excel, either downgrade to `High` or route to `create_bug` (TimeTec project) instead.\n- `Category` (PMv2) / `Bug Category` (iVizit + iNeighbour-2) → `UI/UX Issue` / `Functional Issue` / `Programming/System Issue (Backend/Technical)` / `Business/Requirement Gap`. Suffix on Programming/System Issue is part of the canonical value.\n- `Status` → `New` / `Resolved` / `Closed` / `Reopen` / `Reviewed`. For brand-new bug-filing, pass `New`. Different enum from TimeTec project's status — don't confuse them.\n\nValidation is server-enforced — passing anything outside the allowed list rejects the write with `{ error: 'invalid_enum_value', column, value, allowed }`. Matching is case-insensitive, values normalized to canonical casing on write. The validator is a safety net for typos, not license to guess at categories.\n\n**BUG ROUTING REMINDER:** If you are calling this to log a bug surfaced during discovery, you MUST have first asked the user whether to file it to Excel, the tracker, both, or neither. Use this tool only if the answer was 'excel_only' or as part of an 'tracker_and_excel' decision (in which case `create_bug` with destination='tracker_and_excel' would have handled it automatically). For non-bug data (test-run logs, version tracking, etc.) no confirmation needed.",
   {
     values: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
       .describe("Object of { columnHeaderName: value } for the new row. The `No` column is auto-assigned and ignored if passed."),
+    bug_version: z.string().optional()
+      .describe("Bug Version for the row (placeholder example for all workbooks: 'v26.5.1.1'). MANDATORY — either pass it here or include 'Bug Version' in `values`. Ask the user which release the bug was found on; do not guess. The write is rejected if neither source has a non-empty value."),
     insert_after_no: z.number().optional()
       .describe("If set, insert the new row directly after the row with this `No` (rows below shift down). Omit to append at the bottom."),
     sheet_name: z.string().optional().describe("Worksheet tab name (e.g. '26.5.1.x'). Defaults to 'Bug list' if omitted."),
+    workbook: z.string().optional().describe("Workbook key (case-insensitive) for multi-workbook routing via SHEET_FLOW_URLS. Omit to use the default SHEET_FLOW_URL."),
   },
-  async ({ values, insert_after_no, sheet_name }) => {
-    const r = await callSheetFlow("append", insert_after_no || 0, values, sheet_name);
-    if (!r.ok) return textResult({ error: "flow_call_failed", message: r.error });
+  async ({ values, bug_version, insert_after_no, sheet_name, workbook }) => {
+    // Merge top-level bug_version into values; explicit values['Bug Version']
+    // wins if both are present (matches Excel-first conventions).
+    const enriched = { ...values };
+    if (bug_version != null && enriched["Bug Version"] == null) {
+      enriched["Bug Version"] = bug_version;
+    }
+    // Enforce BUG VERSION RULE — Bug Version is mandatory on every append.
+    const bvValue = String(enriched["Bug Version"] ?? "").trim();
+    if (!bvValue) {
+      return textResult({
+        error: "bug_version_required",
+        message: "Bug Version is mandatory for every appended row. Pass it via the top-level `bug_version` argument or include 'Bug Version' in `values`. Ask the user which release this bug was found on (placeholder example: 'v26.5.1.1' — applies to all workbooks); do not guess from the latest release tab.",
+      });
+    }
+    if (!isValidBugVersion(bvValue)) {
+      return textResult({
+        error: "bug_version_invalid",
+        value: bvValue,
+        message: `Bug Version '${bvValue}' doesn't look like a version string. Accepted shapes: 'v26.5.1.1', 'v26.5.1.x', '2.0.0', '1.0.3 (1)', '1.0.0(3)'. Free-text like 'UAT smoke test' or 'fixed in build' is rejected.`,
+      });
+    }
+    enriched["Bug Version"] = bvValue;
+    // Validate enum-constrained columns BEFORE the flow call (same as
+    // sheet_update_row — Office Scripts bypass Excel data validation).
+    const enumErr = validateEnums(enriched);
+    if (enumErr) {
+      return textResult({
+        error: enumErr.error,
+        column: enumErr.column,
+        value: enumErr.value,
+        allowed: enumErr.allowed,
+        message: enumErr.hint,
+      });
+    }
+    const r = await callSheetFlow("append", insert_after_no || 0, enriched, sheet_name, null, workbook);
+    if (!r.ok) {
+      const errCode = r.error === "workbook_required" ? "workbook_required"
+        : r.error.startsWith("unknown_workbook") ? "unknown_workbook"
+        : "flow_call_failed";
+      return textResult({ error: errCode, message: r.hint || r.error, available: r.available });
+    }
     return textResult(r.result);
   }
 );
@@ -2340,14 +2709,20 @@ server.tool(
 // ── Tool: sheet_read ────────────────────────────────────────────────────────
 server.tool(
   "sheet_read",
-  "Read rows from the PMV2 Bug list workbook. Pass `no` to fetch a single row by its `No` value; omit it (or pass 0) to return every row plus the column headers. Pass `sheet_name` to read a tab other than the default `Bug list` (e.g. a version tab like '26.5.1.x'). Runs through the Power Automate flow.",
+  "Read rows from a configured Excel workbook (PMv2 Bug list by default). Pass `no` to fetch a single row by its `No` value; omit it (or pass 0) to return every row plus the column headers. Pass `sheet_name` to read a tab other than the default `Bug list` (e.g. a version tab like '26.5.1.x'). Pass `workbook` to route to a different workbook when SHEET_FLOW_URLS is configured. Runs through the Power Automate flow.",
   {
     no: z.number().optional().describe("A row's `No` value to fetch one row. Omit or pass 0 to return all rows."),
     sheet_name: z.string().optional().describe("Worksheet tab name (e.g. '26.5.1.x'). Defaults to 'Bug list' if omitted."),
+    workbook: z.string().optional().describe("Workbook key (case-insensitive) for multi-workbook routing via SHEET_FLOW_URLS. Omit to use the default SHEET_FLOW_URL."),
   },
-  async ({ no, sheet_name }) => {
-    const r = await callSheetFlow("read", no || 0, null, sheet_name);
-    if (!r.ok) return textResult({ error: "flow_call_failed", message: r.error });
+  async ({ no, sheet_name, workbook }) => {
+    const r = await callSheetFlow("read", no || 0, null, sheet_name, null, workbook);
+    if (!r.ok) {
+      const errCode = r.error === "workbook_required" ? "workbook_required"
+        : r.error.startsWith("unknown_workbook") ? "unknown_workbook"
+        : "flow_call_failed";
+      return textResult({ error: errCode, message: r.hint || r.error, available: r.available });
+    }
     return textResult(r.result);
   }
 );
@@ -2367,8 +2742,9 @@ server.tool(
   "Read the Modules + Changes Summary for one sub-version section inside a PMv2 release tab, formatted as a markdown table for the user.\n\n**Tab routing:** given `release_version` like 'v26.5.1.2', the tool reads tab `v26.5.1.x` (strip the last dot-segment, append `.x`). Versions MUST start with `v` and have exactly 4 dot-segments — e.g. 'v26.5.1.2', 'v26.4.1.1'. Anything else is rejected.\n\n**Section parsing:** the tab has multiple sub-version sections separated by `Bug Fix` markers; the section starts at a row whose `#` column equals the requested version (e.g. `v26.5.1.2`) and ends at the next `v*.*.*.*` header row or end of tab. Only data rows (numeric `#`) within that range are returned — section markers and version headers are filtered out.\n\n**Response shape (always includes both):**\n- `table_markdown` — a 3-column markdown table (#, Modules, Changes Summary) for the agent to render to the user.\n- `prompt_to_user` — the next-step instructions the agent MUST follow: for EACH module listed, call student-mcp's `recall` to check if knowledge exists. For NOT-FOUND modules, ASK the user whether to discover via student-mcp first or verify manually. Do NOT begin verification without this check.\n\nReturns `{ error: 'invalid_release_version' | 'section_not_found' | ... }` on failure — no partial output.",
   {
     release_version: z.string().describe("Full sub-version with v-prefix and 4 dot-segments, e.g. 'v26.5.1.2'. The tool derives the parent tab (v26.5.1.x) and locates this exact section within it."),
+    workbook: z.string().optional().describe("Workbook key (case-insensitive) for multi-workbook routing via SHEET_FLOW_URLS. Omit to use the default SHEET_FLOW_URL (PMv2)."),
   },
-  async ({ release_version }) => {
+  async ({ release_version, workbook }) => {
     // ── Validate version format ─────────────────────────────────────────
     const versionPattern = /^v\d+\.\d+\.\d+\.\d+$/;
     if (!versionPattern.test(release_version)) {
@@ -2385,12 +2761,16 @@ server.tool(
     const tabName = parts.slice(0, -1).join(".") + ".x";
 
     // ── Read the whole release tab (one call; parsing distills it) ─────
-    const r = await callSheetFlow("read", 0, null, tabName);
+    const r = await callSheetFlow("read", 0, null, tabName, null, workbook);
     if (!r.ok) {
+      const errCode = r.error === "workbook_required" ? "workbook_required"
+        : r.error.startsWith("unknown_workbook") ? "unknown_workbook"
+        : "flow_call_failed";
       return textResult({
-        error: "flow_call_failed",
-        message: r.error,
+        error: errCode,
+        message: r.hint || r.error,
         tab_attempted: tabName,
+        available: r.available,
       });
     }
     const data = r.result;
@@ -2569,15 +2949,16 @@ server.tool(
 // they only want the release column updated.
 server.tool(
   "sheet_verify_release_row",
-  "Record a verification verdict on ONE release row (the TS-RND-* feature rows above the 'Bug Fix' marker) inside a PMv2 release tab. Two outcomes:\n\n• `verdict='no_bugs'`   → writes `Status = 'CLOSED'` on that row, paints the `#` cell green (#20ff1c).\n• `verdict='bugs_found'` → writes the bug No(s) into the `Status` cell, **newline-separated (one No per line)**, paints the `#` cell red (#FF0000).\n\n**Tab routing:** given `release_version` like 'v26.5.1.2', the tool writes to tab `v26.5.1.x` (strip the last dot-segment, append `.x`). Versions MUST start with `v` and have exactly 4 dot-segments. `task_id` MUST match `TS-RND-XXXX` — the release row's `#` cell value.\n\n**BUG LIST PROMPT RULE (must read before calling):** When `verdict='bugs_found'`, before invoking this tool you MUST ask the user whether the new bug(s) should ALSO be appended to the Bug list master tab. Possible answers:\n  • `release_only` — only the release row's `Status` is updated with the bug No(s); nothing is added to Bug list. Use this when the user supplies existing bug No(s) (already filed previously) or wants the bugs tracked only in the release notes.\n  • `both` — the bug(s) belong on BOTH tabs. The agent MUST first call `sheet_append_row(sheet_name='Bug list', values={...})` for each new bug, capture the auto-assigned `No` from each response, then call this tool with `bug_list_decision='both'` and `bug_nos=[<the captured No's>]`.\n\nThe required `bug_list_decision` parameter MUST match the user's confirmed choice. The tool does NOT auto-append to Bug list — that's the agent's responsibility BEFORE this call when the decision is `both`. The parameter is enforced as a contract so the agent cannot silently skip the question.\n\nWhen `verdict='no_bugs'`, do NOT pass `bug_nos` or `bug_list_decision`; the tool rejects the call if either is set.",
+  "Record a verification verdict on ONE release row (the TS-RND-* feature rows above the 'Bug Fix' marker) inside a PMv2 release tab. Two outcomes:\n\n• `verdict='no_bugs'`   → writes `Status = 'CLOSED'` on that row, paints the `#` cell green (#20ff1c).\n• `verdict='bugs_found'` → writes the bug No(s) into the `Status` cell, **newline-separated (one No per line)**, paints the `#` cell red (#FF0000).\n\n**Tab routing:** given `release_version` like 'v26.5.1.2', the tool writes to tab `v26.5.1.x` (strip the last dot-segment, append `.x`). Versions MUST start with `v` and have exactly 4 dot-segments. `task_id` MUST match `TS-RND-XXXX` — the release row's `#` cell value.\n\n**BUG LIST PROMPT RULE (must read before calling):** When `verdict='bugs_found'`, before invoking this tool you MUST ask the user whether the new bug(s) should ALSO be appended to the Bug list master tab. Possible answers:\n  • `release_only` — only the release row's `Status` is updated with the bug No(s); nothing is added to Bug list. Use this when the user supplies existing bug No(s) (already filed previously) or wants the bugs tracked only in the release notes.\n  • `both` — the bug(s) belong on BOTH tabs. The agent MUST first call `sheet_append_row(sheet_name='Bug list', values={...})` for each new bug, capture the auto-assigned `No` from each response, then call this tool with `bug_list_decision='both'` and `bug_nos=[<the captured No's>]`.\n\nThe required `bug_list_decision` parameter MUST match the user's confirmed choice. The tool does NOT auto-append to Bug list — that's the agent's responsibility BEFORE this call when the decision is `both`. The parameter is enforced as a contract so the agent cannot silently skip the question.\n\nWhen `verdict='no_bugs'`, do NOT pass `bug_nos` or `bug_list_decision`; the tool rejects the call if either is set.\n\n**APPEND MODE (`append: true`)** — only valid when `verdict='bugs_found'`. Default is `false` (the Status cell is OVERWRITTEN with the supplied bug_nos, losing any pre-existing No's on the row). When `append: true`, the tool first reads the current Status cell on the release row, parses existing newline-separated bug No's, then merges them with the supplied `bug_nos` (dedupes, preserves existing order, appends new No's to the end). Use append mode when the row was already verified in an earlier session and you're adding more bugs found in a later round — e.g. cell currently shows '812', you pass `bug_nos=[815, 819]` with `append: true`, the cell ends up as '812\\n815\\n819'. An existing 'CLOSED' marker is discarded on append (the row is no longer closed because new bugs were found). Append mode is rejected when `verdict='no_bugs'` (no semantic meaning).",
   {
     release_version: z.string().describe("Full sub-version with v-prefix and 4 dot-segments, e.g. 'v26.5.1.2'. The tool derives the parent tab (v26.5.1.x)."),
     task_id: z.string().describe("Release row identifier — the `#` cell value, e.g. 'TS-RND-0309'. Must match /^TS-RND-\\d+$/i."),
     verdict: z.enum(["bugs_found", "no_bugs"]).describe("'bugs_found' → write bug No(s) into Status, paint # red. 'no_bugs' → write Status='CLOSED', paint # green."),
     bug_nos: z.array(z.union([z.number(), z.string()])).optional().describe("Required when verdict='bugs_found'. Bug No(s) to write into the Status cell, one per line. Numbers or numeric strings. Reject empty arrays."),
     bug_list_decision: z.enum(["release_only", "both"]).optional().describe("Required when verdict='bugs_found'. 'release_only' = only the release row is updated (bug_nos already exist in Bug list, or the user wants release-only tracking). 'both' = the agent has ALREADY appended each new bug to Bug list via sheet_append_row and is passing the captured No(s) here. Tool does NOT auto-append — see BUG LIST PROMPT RULE in the description."),
+    append: z.boolean().optional().default(false).describe("Default false (Status cell is overwritten). Set true to MERGE supplied bug_nos with the cell's existing newline-separated bug No's instead of replacing. Existing order preserved, dupes dropped, new No's appended. Existing 'CLOSED' discarded. Only valid when verdict='bugs_found'."),
   },
-  async ({ release_version, task_id, verdict, bug_nos, bug_list_decision }) => {
+  async ({ release_version, task_id, verdict, bug_nos, bug_list_decision, append }) => {
     // ── Validate release_version format ────────────────────────────────
     const versionPattern = /^v\d+\.\d+\.\d+\.\d+$/;
     if (!versionPattern.test(release_version)) {
@@ -2622,10 +3003,71 @@ server.tool(
           message: "verdict='no_bugs' must NOT carry bug_list_decision — the Bug list prompt only applies when bugs were found. Remove bug_list_decision.",
         });
       }
+      if (append === true) {
+        return textResult({
+          error: "append_not_allowed",
+          message: "append=true is only valid with verdict='bugs_found'. For verdict='no_bugs' the Status cell is always overwritten to 'CLOSED'. Remove append, or change the verdict.",
+        });
+      }
     }
     // ── Derive tab name ────────────────────────────────────────────────
     const parts = release_version.split(".");
     const tabName = parts.slice(0, -1).join(".") + ".x";
+
+    // ── If append=true, read the row first and merge existing bug No's ─
+    // Replace mode (default) discards whatever was in the Status cell.
+    // Append mode preserves prior No's by reading them, parsing the
+    // newline-separated list, deduping against the supplied bug_nos, and
+    // appending only the genuinely new ones. An existing "CLOSED" marker
+    // is dropped (the row is no longer closed if new bugs are being added).
+    let mergedBugNos = null;       // populated only when append=true succeeds
+    let previousBugNos = null;     // for the response, so the agent can see the before/after
+    if (verdict === "bugs_found" && append === true) {
+      const readRes = await callSheetFlow("read", 0, null, tabName, null);
+      if (!readRes.ok) {
+        return textResult({
+          error: "flow_call_failed_on_read",
+          message: `append=true requires reading the release tab first to merge existing bug No's, but the read failed: ${readRes.error}`,
+          tab_attempted: tabName,
+        });
+      }
+      const readResult = readRes.result || {};
+      const headers = Array.isArray(readResult.headers) ? readResult.headers : [];
+      const rows = Array.isArray(readResult.rows) ? readResult.rows : [];
+      if (headers.indexOf("#") === -1 || headers.indexOf("Status") === -1) {
+        return textResult({
+          error: "release_tab_missing_columns",
+          message: `Release tab '${tabName}' is missing '#' or 'Status' column — cannot merge for append.`,
+          tab_attempted: tabName,
+          headers_seen: headers,
+        });
+      }
+      const targetRow = rows.find((r) => String(r["#"] ?? "").trim() === task_id.trim());
+      if (!targetRow) {
+        return textResult({
+          error: "task_id_not_found",
+          message: `task_id '${task_id}' not found on release tab '${tabName}'. Can't append because the row doesn't exist — verify the task_id, or call without append=true to write fresh.`,
+          tab_attempted: tabName,
+        });
+      }
+      const existingRaw = String(targetRow["Status"] ?? "").trim();
+      const existingTokens = existingRaw
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s && s.toUpperCase() !== "CLOSED");
+      previousBugNos = existingTokens.slice();
+      const seen = new Set(existingTokens);
+      const merged = existingTokens.slice();
+      for (const n of bug_nos) {
+        const tok = String(n).trim();
+        if (!tok) continue;
+        if (!seen.has(tok)) {
+          merged.push(tok);
+          seen.add(tok);
+        }
+      }
+      mergedBugNos = merged;
+    }
 
     // ── Build the write payload ────────────────────────────────────────
     let statusValue;
@@ -2635,8 +3077,12 @@ server.tool(
       colors = { "#": "#20ff1c" };
     } else {
       // Newline-separated; one bug No per line. Trim each cell to avoid
-      // accidental whitespace in user-supplied strings.
-      statusValue = bug_nos.map((n) => String(n).trim()).join("\n");
+      // accidental whitespace in user-supplied strings. Use merged list
+      // when append=true, otherwise just the supplied bug_nos (replace mode).
+      const toWrite = mergedBugNos != null
+        ? mergedBugNos
+        : bug_nos.map((n) => String(n).trim());
+      statusValue = toWrite.join("\n");
       colors = { "#": "#FF0000" };
     }
 
@@ -2662,6 +3108,9 @@ server.tool(
       color_applied: colors["#"],
       bug_nos: verdict === "bugs_found" ? bug_nos : null,
       bug_list_decision: verdict === "bugs_found" ? bug_list_decision : null,
+      append_mode: verdict === "bugs_found" ? !!append : null,
+      previous_bug_nos: previousBugNos,        // only populated when append=true
+      merged_bug_nos: mergedBugNos,            // only populated when append=true (existing + new, deduped)
       flow_result: r.result,
     });
   }

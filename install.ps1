@@ -41,6 +41,19 @@ param(
     [string]$AdbPath = '',
     [string]$OneDriveSyncFolder = '',
     [string]$SharepointBaseUrl = '',
+    [string]$SheetFlowUrl = '',           # Power Automate flow URL for THIS registration's
+                                          # Excel workbook (single-workbook mode).
+                                          # Leave empty to inherit the baked-in default in
+                                          # server.js (PMv2 Bug list workbook).
+                                          # Use this when you want a SEPARATE MCP entry
+                                          # per workbook (Path A in the README).
+    [string]$SheetFlowUrls = '',          # Multi-workbook routing map (Path B in the README).
+                                          # JSON map of { workbookKey: flowUrl }, e.g.
+                                          # '{"pmv2":"https://...","ivizit":"https://...",
+                                          #   "ineighbour-2":"https://..."}'.
+                                          # When set, the agent MUST pass `workbook` on every
+                                          # sheet_* call; server rejects calls that don't.
+                                          # Validated as JSON at install time — bad JSON aborts.
 
     # Skip the credential prompts + login-verification entirely. The MCP entry
     # is registered without TIMETEC_EMAIL / TIMETEC_PASSWORD in the env block;
@@ -303,6 +316,40 @@ if ($PSBoundParameters.ContainsKey('SharepointBaseUrl')) {
 } else {
     $sharepoint = Read-PromptDefault "SharePoint base URL (optional)" (Get-ExistingEnv 'SHAREPOINT_BASE_URL')
 }
+if ($PSBoundParameters.ContainsKey('SheetFlowUrl')) {
+    $sheetFlow = $SheetFlowUrl
+} else {
+    # Per-workbook Power Automate webhook. Empty = inherit server.js's
+    # baked-in default (PMv2 Bug list). Override only for multi-workbook
+    # registrations (e.g. -Name timetec-bugs-hrv2 + the HRv2 flow URL).
+    $sheetFlow = Read-PromptDefault "Power Automate flow URL for this workbook (optional, leave blank for PMv2 default)" (Get-ExistingEnv 'SHEET_FLOW_URL')
+}
+if ($PSBoundParameters.ContainsKey('SheetFlowUrls')) {
+    $sheetFlowMap = $SheetFlowUrls
+} else {
+    # Multi-workbook JSON map (Path B). Paste from your team's shared
+    # internal channel (Slack DM, Teams private message, secrets vault) —
+    # the JSON contains SAS tokens, treat as credentials.
+    $sheetFlowMap = Read-PromptDefault "Multi-workbook SHEET_FLOW_URLS JSON map (optional — paste the team's value; leave blank for single-workbook mode)" (Get-ExistingEnv 'SHEET_FLOW_URLS')
+}
+# Validate that SheetFlowUrls is parseable JSON before writing to the env block.
+# Bad JSON would silently disable multi-workbook routing at server startup
+# (server.js's JSON.parse just falls back to {}), so catch it here instead.
+if ($sheetFlowMap) {
+    try {
+        $parsedMap = ConvertFrom-Json $sheetFlowMap -ErrorAction Stop
+        if ($parsedMap -isnot [psobject]) {
+            throw "Top-level value is not a JSON object."
+        }
+        $keys = @($parsedMap.PSObject.Properties.Name)
+        Write-Step "Multi-workbook map validated: $($keys.Count) workbook(s) — $($keys -join ', ')"
+    } catch {
+        Write-Host "  SHEET_FLOW_URLS is not valid JSON: $_" -ForegroundColor Red
+        Write-Host "  Expected format: {`"pmv2`":`"https://...`",`"ivizit`":`"https://...`"}" -ForegroundColor Yellow
+        Write-Host "  Aborting install — fix the JSON and re-run, or omit -SheetFlowUrls to skip multi-workbook setup." -ForegroundColor Red
+        exit 1
+    }
+}
 
 # --- 4. build entry (preserve any existing env keys we didn't ask) ---
 $envObj = [PSCustomObject]@{}
@@ -315,6 +362,8 @@ if ($password)   { $envObj | Add-Member -MemberType NoteProperty -Name 'TIMETEC_
 if ($adbPath)    { $envObj | Add-Member -MemberType NoteProperty -Name 'ADB_PATH'             -Value $adbPath    -Force }
 if ($onedrive)   { $envObj | Add-Member -MemberType NoteProperty -Name 'ONEDRIVE_SYNC_FOLDER' -Value $onedrive   -Force }
 if ($sharepoint) { $envObj | Add-Member -MemberType NoteProperty -Name 'SHAREPOINT_BASE_URL'  -Value $sharepoint -Force }
+if ($sheetFlow)    { $envObj | Add-Member -MemberType NoteProperty -Name 'SHEET_FLOW_URL'  -Value $sheetFlow    -Force }
+if ($sheetFlowMap) { $envObj | Add-Member -MemberType NoteProperty -Name 'SHEET_FLOW_URLS' -Value $sheetFlowMap -Force }
 
 $desiredEntry = [PSCustomObject]@{
     command = 'node'
