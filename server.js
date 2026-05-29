@@ -736,17 +736,36 @@ server.tool(
       return textResult({ error: e.message });
     }
 
-    // Resolve related task (search by display id or keyword)
+    // Resolve related task and capture its assignees in one pass.
+    // The /tasks/{id}/edit route is permission-gated (QC users 302 on RND-owned tasks),
+    // so we read assignees from the search response instead — same fields, no ACL barrier.
     let related_task_id = null;
+    let relatedTaskAssignees = null; // { ids: number[], names: string[] }
     if (params.related_task != null) {
-      if (typeof params.related_task === "number") {
-        related_task_id = params.related_task;
-      } else if (/^\d+$/.test(params.related_task)) {
-        related_task_id = parseInt(params.related_task, 10);
-      } else {
-        try {
-          const taskSearch = await inertiaGet(`/tasks?search=${encodeURIComponent(params.related_task)}&view=all`);
-          const matches = taskSearch.props?.tasks?.data || [];
+      const isNumericInput =
+        typeof params.related_task === "number" || /^\d+$/.test(params.related_task);
+      const numericId = isNumericInput
+        ? (typeof params.related_task === "number"
+            ? params.related_task
+            : parseInt(params.related_task, 10))
+        : null;
+
+      const query = isNumericInput ? String(numericId) : params.related_task;
+      try {
+        const taskSearch = await inertiaGet(`/tasks?search=${encodeURIComponent(query)}&view=all`);
+        const matches = taskSearch.props?.tasks?.data || [];
+
+        if (isNumericInput) {
+          // Trust the caller's numeric id; search is best-effort for assignee enrichment.
+          related_task_id = numericId;
+          const exact = matches.find((t) => t.id === numericId);
+          if (exact) {
+            relatedTaskAssignees = {
+              ids: exact.assignee_ids || [],
+              names: exact.assignee_names || [],
+            };
+          }
+        } else {
           if (matches.length === 0) {
             return textResult({ error: `No task matches "${params.related_task}". Use search_tasks to find one.` });
           }
@@ -765,9 +784,54 @@ server.tool(
             });
           }
           related_task_id = matchedTask.id;
-        } catch (e) {
+          relatedTaskAssignees = {
+            ids: matchedTask.assignee_ids || [],
+            names: matchedTask.assignee_names || [],
+          };
+        }
+      } catch (e) {
+        if (related_task_id == null) {
           return textResult({ error: `Failed to resolve related task: ${e.message}` });
         }
+        // Numeric input: link the task even if enrichment failed.
+      }
+    }
+
+    // Auto-populate assignees from the related task (minus the authenticated user).
+    // Rule: when a bug is filed with a task ID, assignees default to the task's
+    // assignees with the caller excluded — so bugs route to teammates, not back to self.
+    // Skipped if the caller explicitly passed `assignees`.
+    let auto_assignees_from_task = null;
+    if (related_task_id != null && assignee_ids.length === 0) {
+      if (relatedTaskAssignees && relatedTaskAssignees.ids.length > 0) {
+        const filteredIds = [];
+        const filteredNames = [];
+        relatedTaskAssignees.ids.forEach((id, i) => {
+          const name = relatedTaskAssignees.names[i] || null;
+          if (name !== currentUserName) {
+            filteredIds.push(id);
+            filteredNames.push(name);
+          }
+        });
+        if (filteredIds.length > 0) {
+          assignee_ids = filteredIds;
+          auto_assignees_from_task = {
+            applied: filteredNames,
+            excluded_self: currentUserName,
+            task_total_assignees: relatedTaskAssignees.names,
+          };
+        } else {
+          auto_assignees_from_task = {
+            applied: [],
+            excluded_self: currentUserName,
+            task_total_assignees: relatedTaskAssignees.names,
+            note: "Task had no other assignees besides the authenticated user — bug filed with empty assignees.",
+          };
+        }
+      } else {
+        auto_assignees_from_task = {
+          note: "Task assignees unavailable (numeric ID with no search match) — bug filed without auto-populated assignees.",
+        };
       }
     }
 
@@ -883,6 +947,7 @@ server.tool(
       success: true,
       message: "Bug created successfully",
       resolved: { product_id, module_id, category_id, assignee_ids, related_task_id },
+      auto_assignees_from_task,
       bug: created ? formatBug(created) : null,
       sheet: sheetOutcome,
     });
